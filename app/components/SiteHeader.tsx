@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Zap, Search, Eye } from 'lucide-react';
+import { Zap, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 export default function SiteHeader() {
@@ -23,12 +23,6 @@ export default function SiteHeader() {
             <Link href="/equipment">
               <Search className="h-4 w-4 mr-2" />
               Equipment
-            </Link>
-          </Button>
-          <Button variant="outline" asChild>
-            <Link href="/equipment/recV1q5a8y5SMQ8DS">
-              <Eye className="h-4 w-4 mr-2" />
-              Example
             </Link>
           </Button>
         </nav>

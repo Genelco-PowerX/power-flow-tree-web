@@ -140,35 +140,37 @@ export default function PowerFlowTree({
           position="bottom-left"
         />
 
-        <MiniMap
-          nodeColor={(node) => {
-            // Color nodes in minimap based on their type
-            if (node.id === treeData.selectedEquipment.id) return '#b8ff2b';
+        <div className="hidden md:block">
+          <MiniMap
+            nodeColor={(node) => {
+              // Color nodes in minimap based on their type
+              if (node.id === treeData.selectedEquipment.id) return '#b8ff2b';
 
-            // Check if it's upstream or downstream
-            const isUpstream = treeData.upstream.some(eq => eq.id === node.id);
-            if (isUpstream) {
-              const equipment = treeData.upstream.find(eq => eq.id === node.id);
-              const branch = (equipment as any)?.branch || 'S1';
-              return branch === 'S2' ? '#2b81e5' : '#1259ad';
-            }
+              // Check if it's upstream or downstream
+              const isUpstream = treeData.upstream.some(eq => eq.id === node.id);
+              if (isUpstream) {
+                const equipment = treeData.upstream.find(eq => eq.id === node.id);
+                const branch = (equipment as any)?.branch || 'S1';
+                return branch === 'S2' ? '#2b81e5' : '#1259ad';
+              }
 
-            return '#e77b16'; // downstream
-          }}
-          nodeStrokeWidth={2}
-          position="bottom-right"
-          pannable={true}
-          zoomable={true}
-          style={{
-            backgroundColor: '#f9fafb',
-            border: '1px solid #e5e7eb',
-            borderRadius: '8px'
-          }}
-        />
+              return '#e77b16'; // downstream
+            }}
+            nodeStrokeWidth={2}
+            position="bottom-right"
+            pannable={true}
+            zoomable={true}
+            style={{
+              backgroundColor: '#f9fafb',
+              border: '1px solid #e5e7eb',
+              borderRadius: '8px'
+            }}
+          />
+        </div>
       </ReactFlow>
 
       {/* Node Count Info */}
-      <div className="absolute top-4 right-4 bg-white/90 backdrop-blur-sm rounded-lg shadow-sm border px-3 py-2 text-sm text-gray-600">
+      <div className="hidden lg:block absolute top-4 right-4 bg-white/90 backdrop-blur-sm rounded-lg shadow-sm border px-3 py-2 text-sm text-gray-600">
         <div>Showing {visibleNodes.length} of {treeData.nodes.length} nodes</div>
       </div>
 

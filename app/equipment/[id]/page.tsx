@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, Zap, RotateCcw, AlertCircle } from 'lucide-react';
 import html2canvas from 'html2canvas';
+import { exportTreeToPng } from '@/lib/export';
 import PowerFlowTree from '@/components/PowerFlowTree';
 import TreeControls from '@/components/TreeControls';
 import { Button } from "@/components/ui/button";
@@ -62,22 +63,11 @@ export default function EquipmentDetailPage() {
   };
 
   const handleExport = async () => {
-    const treeElement = document.getElementById('power-flow-tree');
-    if (treeElement) {
-      try {
-        const canvas = await html2canvas(treeElement, {
-          backgroundColor: '#ffffff',
-          scale: 2,
-          useCORS: true,
-        });
-
-        const link = document.createElement('a');
-        link.download = `power-flow-tree-${treeData?.selectedEquipment?.name || 'export'}.png`;
-        link.href = canvas.toDataURL();
-        link.click();
-      } catch (error) {
-        console.error('Error exporting tree:', error);
-      }
+    if (!treeData) return
+    try {
+      await exportTreeToPng(treeData, { showS1Upstream, showS2Upstream, showDownstream }, `power-flow-tree-${treeData.selectedEquipment.name}`)
+    } catch (err) {
+      console.error('Error exporting tree (SVG fallback):', err)
     }
   };
 
@@ -168,7 +158,7 @@ export default function EquipmentDetailPage() {
     <div className="flex min-h-[calc(100vh-4rem)] flex-col bg-background">
       <div className="flex flex-1 overflow-hidden flex-col lg:flex-row">
         {/* Sidebar Controls */}
-        <aside className="w-full lg:w-80 border-b lg:border-b-0 lg:border-r bg-muted/30 flex flex-col overflow-hidden">
+        <aside className="w-full lg:w-80 lg:border-r flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto p-4">
             <TreeControls
               showS1Upstream={showS1Upstream}
