@@ -158,28 +158,61 @@ export default function EquipmentDetailPage() {
     <div className="flex flex-col lg:flex-row h-[calc(100dvh-4rem)] bg-background overflow-hidden">
       {/* Sidebar Controls */}
       <aside className="w-full lg:w-80 lg:border-r flex flex-col shrink-0">
-        <div className="lg:flex-1 lg:overflow-y-auto p-4 space-y-4">
-          {/* Selected Equipment Header */}
-          <div className="space-y-2 text-center lg:text-left">
-            <h1 className="text-lg md:text-xl font-semibold text-foreground leading-tight">
-              {treeData.selectedEquipment.name}
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              {treeData.selectedEquipment.type}
-            </p>
+        <div className="lg:flex-1 lg:overflow-y-auto p-4">
+          {/* Mobile/Tablet Layout - Equipment name and controls in row */}
+          <div className="lg:hidden">
+            <div className="flex items-start justify-between gap-4 mb-4">
+              {/* Equipment Info */}
+              <div className="flex-1 min-w-0">
+                <h1 className="text-lg font-semibold text-foreground leading-tight truncate">
+                  {treeData.selectedEquipment.name}
+                </h1>
+                <p className="text-sm text-muted-foreground truncate">
+                  {treeData.selectedEquipment.type}
+                </p>
+              </div>
+
+              {/* Controls Dropdown */}
+              <div className="flex-shrink-0">
+                <TreeControls
+                  showS1Upstream={showS1Upstream}
+                  setShowS1Upstream={setShowS1Upstream}
+                  showS2Upstream={showS2Upstream}
+                  setShowS2Upstream={setShowS2Upstream}
+                  showDownstream={showDownstream}
+                  setShowDownstream={setShowDownstream}
+                  treeData={treeData}
+                  onPrint={handlePrint}
+                  onExport={handleExport}
+                />
+              </div>
+            </div>
           </div>
 
-          <TreeControls
-            showS1Upstream={showS1Upstream}
-            setShowS1Upstream={setShowS1Upstream}
-            showS2Upstream={showS2Upstream}
-            setShowS2Upstream={setShowS2Upstream}
-            showDownstream={showDownstream}
-            setShowDownstream={setShowDownstream}
-            treeData={treeData}
-            onPrint={handlePrint}
-            onExport={handleExport}
-          />
+          {/* Desktop Layout - Stacked */}
+          <div className="hidden lg:block space-y-4">
+            {/* Selected Equipment Header */}
+            <div className="space-y-2">
+              <h1 className="text-xl font-semibold text-foreground leading-tight">
+                {treeData.selectedEquipment.name}
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                {treeData.selectedEquipment.type}
+              </p>
+            </div>
+
+            <TreeControls
+              showS1Upstream={showS1Upstream}
+              setShowS1Upstream={setShowS1Upstream}
+              showS2Upstream={showS2Upstream}
+              setShowS2Upstream={setShowS2Upstream}
+              showDownstream={showDownstream}
+              setShowDownstream={setShowDownstream}
+              treeData={treeData}
+              onPrint={handlePrint}
+              onExport={handleExport}
+            />
+          </div>
         </div>
       </aside>
 
