@@ -165,7 +165,7 @@ export default function EquipmentDetailPage() {
               {treeData.selectedEquipment.name}
             </h1>
             <p className="text-sm text-muted-foreground">
-              {treeData.selectedEquipment.equipmentType}
+              {treeData.selectedEquipment.type}
             </p>
           </div>
 
