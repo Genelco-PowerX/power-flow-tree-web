@@ -155,11 +155,11 @@ export default function EquipmentDetailPage() {
   }
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)] flex-col bg-background">
+    <div className="flex h-[calc(100vh-4rem)] flex-col bg-background">
       <div className="flex flex-1 overflow-hidden flex-col lg:flex-row">
         {/* Sidebar Controls */}
-        <aside className="w-full lg:w-80 lg:border-r flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto p-4">
+        <aside className="w-full lg:w-80 lg:border-r flex flex-col overflow-hidden shrink-0">
+          <div className="lg:flex-1 lg:overflow-y-auto p-4">
             <TreeControls
               showS1Upstream={showS1Upstream}
               setShowS1Upstream={setShowS1Upstream}
@@ -175,7 +175,7 @@ export default function EquipmentDetailPage() {
         </aside>
 
         {/* Main Tree View */}
-        <main className="flex-1 relative overflow-hidden min-h-[400px] lg:min-h-0" id="power-flow-tree">
+        <main className="flex-1 relative overflow-hidden" id="power-flow-tree">
           <div className="absolute inset-0">
             <PowerFlowTree
               treeData={treeData}
