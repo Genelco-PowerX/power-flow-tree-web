@@ -155,37 +155,33 @@ export default function EquipmentDetailPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] flex-col bg-background">
-      <div className="flex flex-1 overflow-hidden flex-col lg:flex-row">
-        {/* Sidebar Controls */}
-        <aside className="w-full lg:w-80 lg:border-r flex flex-col overflow-hidden shrink-0">
-          <div className="lg:flex-1 lg:overflow-y-auto p-4">
-            <TreeControls
-              showS1Upstream={showS1Upstream}
-              setShowS1Upstream={setShowS1Upstream}
-              showS2Upstream={showS2Upstream}
-              setShowS2Upstream={setShowS2Upstream}
-              showDownstream={showDownstream}
-              setShowDownstream={setShowDownstream}
-              treeData={treeData}
-              onPrint={handlePrint}
-              onExport={handleExport}
-            />
-          </div>
-        </aside>
+    <div className="flex flex-col lg:flex-row h-[calc(100vh-4rem)] bg-background overflow-hidden">
+      {/* Sidebar Controls */}
+      <aside className="w-full lg:w-80 lg:border-r flex flex-col shrink-0">
+        <div className="lg:flex-1 lg:overflow-y-auto p-4">
+          <TreeControls
+            showS1Upstream={showS1Upstream}
+            setShowS1Upstream={setShowS1Upstream}
+            showS2Upstream={showS2Upstream}
+            setShowS2Upstream={setShowS2Upstream}
+            showDownstream={showDownstream}
+            setShowDownstream={setShowDownstream}
+            treeData={treeData}
+            onPrint={handlePrint}
+            onExport={handleExport}
+          />
+        </div>
+      </aside>
 
-        {/* Main Tree View */}
-        <main className="flex-1 relative overflow-hidden" id="power-flow-tree">
-          <div className="absolute inset-0">
-            <PowerFlowTree
-              treeData={treeData}
-              showS1Upstream={showS1Upstream}
-              showS2Upstream={showS2Upstream}
-              showDownstream={showDownstream}
-            />
-          </div>
-        </main>
-      </div>
+      {/* Main Tree View */}
+      <main className="flex-1 relative min-h-0" id="power-flow-tree">
+        <PowerFlowTree
+          treeData={treeData}
+          showS1Upstream={showS1Upstream}
+          showS2Upstream={showS2Upstream}
+          showDownstream={showDownstream}
+        />
+      </main>
     </div>
   );
 }
