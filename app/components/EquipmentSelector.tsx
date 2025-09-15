@@ -162,7 +162,7 @@ export function EquipmentSelector({ selectedEquipmentId, onEquipmentSelect }: Eq
                   </div>
                 </SelectValue>
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="max-h-[200px] overflow-y-auto">
                 {equipmentTypes.map(type => (
                   <SelectItem key={type} value={type}>
                     <div className="flex items-center justify-between w-full">
@@ -222,7 +222,7 @@ export function EquipmentSelector({ selectedEquipmentId, onEquipmentSelect }: Eq
                 )}
               </SelectValue>
             </SelectTrigger>
-            <SelectContent className="max-h-[300px]">
+            <SelectContent className="max-h-[300px] overflow-y-auto">
               {filteredEquipment.length === 0 ? (
                 <div className="px-2 py-8 text-center text-sm text-muted-foreground">
                   <AlertCircle className="h-8 w-8 mx-auto mb-2 opacity-50" />

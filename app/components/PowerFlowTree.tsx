@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import ReactFlow, {
   Node,
   Edge,
@@ -78,6 +78,7 @@ export default function PowerFlowTree({
   const nodeTypes = useMemo(() => ({ powerNode: PowerNode }), []);
 
   const rfInstance = useRef<ReactFlowInstance | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const didInitialFit = useRef(false);
 
   // Update nodes and edges when visibility changes
@@ -101,8 +102,45 @@ export default function PowerFlowTree({
     }
   }, []);
 
+  // Refit on viewport size changes (mobile address bar, rotation, etc.)
+  useEffect(() => {
+    const fit = () => {
+      if (!rfInstance.current) return;
+      // Schedule to allow layout to settle
+      requestAnimationFrame(() => {
+        rfInstance.current?.fitView({ padding: 0.12, maxZoom: 1.2, duration: 250 });
+      });
+    };
+
+    const onResize = () => fit();
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    // Support iOS visual viewport changes
+    const vv = (window as any).visualViewport as VisualViewport | undefined;
+    vv?.addEventListener('resize', onResize);
+
+    // Observe container size changes (e.g., layout shifts)
+    const ro = new ResizeObserver(() => fit());
+    if (containerRef.current) ro.observe(containerRef.current);
+
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+      vv?.removeEventListener('resize', onResize);
+      ro.disconnect();
+    };
+  }, []);
+
+  // Refit when visibility changes substantially
+  useEffect(() => {
+    if (!rfInstance.current) return;
+    requestAnimationFrame(() => {
+      rfInstance.current?.fitView({ padding: 0.12, maxZoom: 1.2, duration: 200 });
+    });
+  }, [visibleNodes.length, visibleEdges.length]);
+
   return (
-    <div className="w-full h-full" onDoubleClick={onDoubleClick}>
+    <div ref={containerRef} className="w-full h-full" onDoubleClick={onDoubleClick}>
       <ReactFlow
         nodes={nodes}
         edges={edges}

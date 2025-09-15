@@ -96,7 +96,7 @@ export default function EquipmentDetailPage() {
 
   if (loading) {
     return (
-      <div className="min-h-[calc(100vh-4rem)] bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center">
+      <div className="min-h-[calc(100dvh-4rem)] bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
           <p className="mt-4 text-muted-foreground">Loading power flow tree...</p>
@@ -107,7 +107,7 @@ export default function EquipmentDetailPage() {
 
   if (error) {
     return (
-      <div className="min-h-[calc(100vh-4rem)] bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center">
+      <div className="min-h-[calc(100dvh-4rem)] bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center">
         <Card className="max-w-md">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-destructive">
@@ -155,10 +155,20 @@ export default function EquipmentDetailPage() {
   }
 
   return (
-    <div className="flex flex-col lg:flex-row h-[calc(100vh-4rem)] bg-background overflow-hidden">
+    <div className="flex flex-col lg:flex-row h-[calc(100dvh-4rem)] bg-background overflow-hidden">
       {/* Sidebar Controls */}
       <aside className="w-full lg:w-80 lg:border-r flex flex-col shrink-0">
-        <div className="lg:flex-1 lg:overflow-y-auto p-4">
+        <div className="lg:flex-1 lg:overflow-y-auto p-4 space-y-4">
+          {/* Selected Equipment Header */}
+          <div className="space-y-2 text-center lg:text-left">
+            <h1 className="text-lg md:text-xl font-semibold text-foreground leading-tight">
+              {treeData.selectedEquipment.name}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {treeData.selectedEquipment.equipmentType}
+            </p>
+          </div>
+
           <TreeControls
             showS1Upstream={showS1Upstream}
             setShowS1Upstream={setShowS1Upstream}
