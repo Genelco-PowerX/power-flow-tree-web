@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Build
+        env:
+          # Prevent accidental use of production Airtable credentials in CI builds
+          AIRTABLE_API_KEY: dummy
+          AIRTABLE_BASE_ID: dummy
+          AIRTABLE_TABLE_ID: dummy
+        run: npm run build
+
