@@ -717,32 +717,21 @@ function generateNodesAndEdges(
         }
       });
 
+      // Add edge to parent
       if (eq.parentId) {
-        const connSource = getUpstreamEdgeSourceNumber(eq.parentId, eq.id);
-        const isS2Connection = connSource === 'S2';
-        const sourceHandle = isS2Connection ? 'br' : 'b';
-        const targetHandle = isS2Connection ? 'tr' : 't';
         edges.push({
           id: `${eq.parentId}-${eq.id}`,
           source: eq.parentId,
           target: eq.id,
           type: 'smoothstep',
-          sourceHandle,
-          targetHandle,
-          label: connSource === 'S2' || connSource === 'S1' ? connSource : undefined,
-          labelShowBg: true,
-          labelBgStyle: { fill: '#ffffff', fillOpacity: 0.9, stroke: '#e5e7eb' },
-          labelBgPadding: [4, 2],
-          labelBgBorderRadius: 6,
-          labelStyle: { fill: '#0f172a', fontWeight: 600, fontSize: 11 },
+          sourceHandle: 'b',
+          targetHandle: 't',
           style: {
-            stroke: connSource === 'S2' ? '#2b81e5' : '#1259ad',
-            strokeWidth: 2,
-            strokeDasharray: connSource === 'S2' ? '6 4' : undefined
+            stroke: color,
+            strokeWidth: 2
           },
           data: {
-            sourceNumber: connSource,
-            isLoop: eq.isLoopGroup
+            sourceNumber: 'downstream'
           }
         });
       }
@@ -761,17 +750,13 @@ function generateNodesAndEdges(
             );
 
             if (!existingEdge) {
-              const isAltS2 = altParent.sourceNumber === 'S2';
-              const sourceHandle = isAltS2 ? 'br' : 'b';
-              const targetHandle = isAltS2 ? 'tr' : 't';
-
               edges.push({
                 id: edgeId,
                 source: altParent.id,
                 target: eq.id,
                 type: 'smoothstep',
-                sourceHandle,
-                targetHandle,
+                sourceHandle: 'b',
+                targetHandle: 't',
                 label: isBypass ? 'BYPASS' : altParent.sourceNumber,
                 labelShowBg: true,
                 labelBgStyle: {
