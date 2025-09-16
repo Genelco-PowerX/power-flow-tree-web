@@ -875,6 +875,88 @@ function generateNodesAndEdges(
     });
   });
 
+  // Add edges for the selected equipment to its direct connections
+  const selectedConnections = connectionMap.get(selectedEquipment.id);
+  if (selectedConnections) {
+    // Add edges to upstream equipment (selected equipment receives from these)
+    selectedConnections.upstream.forEach(upstream => {
+      // Only add if the upstream equipment is in our node list
+      const upstreamNode = nodes.find(n => n.id === upstream.id);
+      if (upstreamNode) {
+        edges.push({
+          id: `${upstream.id}-${selectedEquipment.id}`,
+          source: upstream.id,
+          target: selectedEquipment.id,
+          type: 'smoothstep',
+          sourceHandle: 'b',
+          targetHandle: 't',
+          label: upstream.sourceNumber,
+          labelShowBg: true,
+          labelBgStyle: {
+            fill: '#ffffff',
+            fillOpacity: 0.9,
+            stroke: '#e5e7eb'
+          },
+          labelBgPadding: [4, 2],
+          labelBgBorderRadius: 6,
+          labelStyle: {
+            fill: '#0f172a',
+            fontWeight: 600,
+            fontSize: 11
+          },
+          style: {
+            stroke: upstream.sourceNumber === 'S1' ? '#1259ad' : '#3b82f6',
+            strokeWidth: 2
+          },
+          data: {
+            sourceNumber: upstream.sourceNumber,
+            connectionType: upstream.connectionType,
+            isAlternate: upstream.connectionType === 'bypass' || upstream.connectionType === 'redundant'
+          }
+        });
+      }
+    });
+
+    // Add edges to downstream equipment (selected equipment feeds these)
+    selectedConnections.downstream.forEach(downstream => {
+      // Only add if the downstream equipment is in our node list
+      const downstreamNode = nodes.find(n => n.id === downstream.id);
+      if (downstreamNode) {
+        edges.push({
+          id: `${selectedEquipment.id}-${downstream.id}`,
+          source: selectedEquipment.id,
+          target: downstream.id,
+          type: 'smoothstep',
+          sourceHandle: 'b',
+          targetHandle: 't',
+          label: downstream.sourceNumber,
+          labelShowBg: true,
+          labelBgStyle: {
+            fill: '#ffffff',
+            fillOpacity: 0.9,
+            stroke: '#e5e7eb'
+          },
+          labelBgPadding: [4, 2],
+          labelBgBorderRadius: 6,
+          labelStyle: {
+            fill: '#0f172a',
+            fontWeight: 600,
+            fontSize: 11
+          },
+          style: {
+            stroke: downstream.sourceNumber === 'S1' ? '#1259ad' : '#3b82f6',
+            strokeWidth: 2
+          },
+          data: {
+            sourceNumber: downstream.sourceNumber,
+            connectionType: downstream.connectionType,
+            isAlternate: downstream.connectionType === 'bypass' || downstream.connectionType === 'redundant'
+          }
+        });
+      }
+    });
+  }
+
   // Deduplicate edges to prevent React key conflicts
   const uniqueEdges: TreeEdge[] = [];
   const edgeMap = new Map<string, TreeEdge>();
