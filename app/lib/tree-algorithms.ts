@@ -720,8 +720,8 @@ function generateNodesAndEdges(
       if (eq.parentId) {
         const connSource = getUpstreamEdgeSourceNumber(eq.parentId, eq.id);
         const isS2Connection = connSource === 'S2';
-        const sourceHandle = isS2Connection ? 'br' : 'bl';
-        const targetHandle = isS2Connection ? 'tr' : 'tl';
+        const sourceHandle = isS2Connection ? 'br' : 'b';
+        const targetHandle = isS2Connection ? 'tr' : 't';
         edges.push({
           id: `${eq.parentId}-${eq.id}`,
           source: eq.parentId,
@@ -762,8 +762,8 @@ function generateNodesAndEdges(
 
             if (!existingEdge) {
               const isAltS2 = altParent.sourceNumber === 'S2';
-              const sourceHandle = isAltS2 ? 'br' : 'bl';
-              const targetHandle = isAltS2 ? 'tr' : 'tl';
+              const sourceHandle = isAltS2 ? 'br' : 'b';
+              const targetHandle = isAltS2 ? 'tr' : 't';
 
               edges.push({
                 id: edgeId,
@@ -935,7 +935,7 @@ function generateNodesAndEdges(
         if (upstreamNode && !existingEdge) {
           const isS2 = upstream.sourceNumber === 'S2';
           const sourceHandle = isS2 ? 'br' : 'bl';
-          const targetHandle = isS2 ? 'tr' : 'tl';
+          const targetHandle = isS2 ? 'tl' : 'tl';
           edges.push({
             id: `${upstream.id}-${selectedEquipment.id}`,
             source: upstream.id,
