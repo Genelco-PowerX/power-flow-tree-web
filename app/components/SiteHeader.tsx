@@ -23,8 +23,8 @@ export default function SiteHeader() {
         <div className="container flex h-16 max-w-screen-2xl items-center px-4">
           <Link href="/" className="flex items-center gap-3">
             <Image
-              src="/icon.svg"
-              alt="Power Flow Tree Analysis"
+              src="/images/genelco-g-logo-blue.svg"
+              alt="Genelco Power Flow Tree Analysis"
               width={32}
               height={32}
               className="h-8 w-8"
