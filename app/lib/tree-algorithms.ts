@@ -489,30 +489,21 @@ function processLoopGroups(equipment: ProcessedEquipment[], connectionMap: Conne
         || (closestToSelected.sourceNumber as 'S1' | 'S2' | undefined)
         || (prioritizedSource as 'S1' | 'S2' | undefined);
 
-      const upstreamEntry = connectionMap.get(closestToSelected.id);
-      let loopParentId = closestToSelected.parentId;
-      if (closestToSelected.parentIds && closestToSelected.parentIds.length) {
-        if (branchHint) {
-          const matchingParent = closestToSelected.parentIds.find(pid => {
-            const relation = upstreamEntry?.upstream.find(u => u.id === pid);
-            return relation?.sourceNumber === branchHint;
-          });
-          if (matchingParent) {
-            loopParentId = matchingParent;
-          } else if (!loopParentId) {
-            loopParentId = closestToSelected.parentIds[0];
-          }
-        } else if (!loopParentId) {
-          loopParentId = closestToSelected.parentIds[0];
-        }
+      const loopParentId = closestToSelected.parentId
+        || (closestToSelected.parentIds && closestToSelected.parentIds.length
+          ? closestToSelected.parentIds[0]
+          : undefined);
+
+      let parentRelation: { sourceNumber: string } | undefined;
+      if (loopParentId) {
+        const parentEntry = connectionMap.get(loopParentId);
+        parentRelation = parentEntry?.upstream.find(u =>
+          group.equipment.some(member => member.id === u.id)
+        );
       }
 
-      const parentRelation = loopParentId
-        ? upstreamEntry?.upstream.find(u => u.id === loopParentId)
-        : undefined;
-
-      let loopBranch = (parentRelation?.sourceNumber as 'S1' | 'S2' | undefined)
-        || branchHint
+      let loopBranch = branchHint
+        || (parentRelation?.sourceNumber as 'S1' | 'S2' | undefined)
         || (group.sources.includes('S2') && !group.sources.includes('S1') ? 'S2'
           : group.sources.includes('S1') ? 'S1'
           : undefined);
@@ -673,9 +664,13 @@ function generateNodesAndEdges(
   // Position upstream equipment
   upstreamByLevel.forEach((levelEquipment, level) => {
     const y = centerY - (level * levelSpacing);
-    const s1Group = levelEquipment.filter(eq => getEquipmentBranch(eq.id) === 'S1');
-    const s2Group = levelEquipment.filter(eq => getEquipmentBranch(eq.id) === 'S2');
-    const horizontalGap = nodeSpacing * 1.5;
+    const s1Group = levelEquipment
+      .filter(eq => getEquipmentBranch(eq.id) === 'S1')
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const s2Group = levelEquipment
+      .filter(eq => getEquipmentBranch(eq.id) === 'S2')
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const horizontalGap = nodeSpacing * 2;
 
     const renderEquipment = (eq: ProcessedEquipment, x: number) => {
       const branch = getEquipmentBranch(eq.id);
@@ -888,8 +883,8 @@ function generateNodesAndEdges(
           source: upstream.id,
           target: selectedEquipment.id,
           type: 'smoothstep',
-          sourceHandle: 'b',
-          targetHandle: 't',
+          sourceHandle: 'bl',
+          targetHandle: 'tl',
           label: upstream.sourceNumber,
           labelShowBg: true,
           labelBgStyle: {
@@ -906,7 +901,8 @@ function generateNodesAndEdges(
           },
           style: {
             stroke: upstream.sourceNumber === 'S1' ? '#1259ad' : '#3b82f6',
-            strokeWidth: 2
+            strokeWidth: 2,
+            strokeDasharray: '4 2' // Add dashed pattern to distinguish from outgoing edge
           },
           data: {
             sourceNumber: upstream.sourceNumber,
@@ -927,8 +923,8 @@ function generateNodesAndEdges(
           source: selectedEquipment.id,
           target: downstream.id,
           type: 'smoothstep',
-          sourceHandle: 'b',
-          targetHandle: 't',
+          sourceHandle: 'br',
+          targetHandle: 'tr',
           label: downstream.sourceNumber,
           labelShowBg: true,
           labelBgStyle: {
