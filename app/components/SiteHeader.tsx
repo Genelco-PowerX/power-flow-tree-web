@@ -25,9 +25,10 @@ export default function SiteHeader() {
             <Image
               src="/images/genelco-g-logo-blue.svg"
               alt="Genelco Power Flow Tree Analysis"
-              width={32}
-              height={32}
-              className="h-8 w-8"
+              width={40}
+              height={40}
+              className="h-10 w-10"
+              priority
             />
             <div className="hidden sm:flex flex-col">
               <span className="text-base font-bold leading-none tracking-tight">Power Flow Tree</span>
