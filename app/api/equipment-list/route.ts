@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getEquipmentList } from '@/lib/airtable';
-import { getCached, setCached } from '@/lib/cache';
+import { getCached, setCachedEquipmentList } from '@/lib/cache';
 
 export async function GET() {
   try {
@@ -14,6 +14,10 @@ export async function GET() {
         data: cached,
         cached: true,
         timestamp: new Date().toISOString()
+      }, {
+        headers: {
+          'Cache-Control': 'public, s-maxage=14400, stale-while-revalidate=3600', // 4hr cache, 1hr stale
+        }
       });
     }
 
@@ -24,14 +28,18 @@ export async function GET() {
     // Sort by name for better UX
     equipmentList.sort((a, b) => a.name.localeCompare(b.name));
 
-    // Cache the results
-    setCached(cacheKey, equipmentList);
+    // Cache the results with appropriate TTL
+    setCachedEquipmentList(cacheKey, equipmentList);
 
     return NextResponse.json({
       data: equipmentList,
       cached: false,
       timestamp: new Date().toISOString(),
       count: equipmentList.length
+    }, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=14400, stale-while-revalidate=3600', // 4hr cache, 1hr stale
+      }
     });
 
   } catch (error) {

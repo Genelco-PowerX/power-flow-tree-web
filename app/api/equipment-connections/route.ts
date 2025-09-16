@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getEquipmentConnections } from '@/lib/airtable';
-import { getCached, setCached } from '@/lib/cache';
+import { getCached, setCachedRaw, setCached } from '@/lib/cache';
 
 export async function GET() {
   try {
@@ -14,6 +14,10 @@ export async function GET() {
         data: cached,
         cached: true,
         timestamp: new Date().toISOString()
+      }, {
+        headers: {
+          'Cache-Control': 'public, s-maxage=21600, stale-while-revalidate=7200',
+        }
       });
     }
 
@@ -21,14 +25,18 @@ export async function GET() {
     console.log('Fetching equipment connections from Airtable...');
     const connections = await getEquipmentConnections();
 
-    // Cache the results
-    setCached(cacheKey, connections);
+    // Cache the results with appropriate TTL
+    setCachedRaw(cacheKey, connections);
 
     return NextResponse.json({
       data: connections,
       cached: false,
       timestamp: new Date().toISOString(),
       count: connections.length
+    }, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=21600, stale-while-revalidate=7200', // 6hr cache, 2hr stale
+      }
     });
 
   } catch (error) {

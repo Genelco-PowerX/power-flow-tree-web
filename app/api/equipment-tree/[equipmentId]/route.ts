@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { generatePowerFlowTree } from '@/lib/tree-algorithms';
-import { getCached, setCached } from '@/lib/cache';
+import { getCached, setCachedTree } from '@/lib/cache';
 
 export async function GET(
   request: Request,
@@ -29,6 +29,10 @@ export async function GET(
         ...cached,
         cached: true,
         timestamp: new Date().toISOString()
+      }, {
+        headers: {
+          'Cache-Control': 'public, s-maxage=7200, stale-while-revalidate=1800', // 2hr cache, 30min stale
+        }
       });
     }
 
@@ -36,14 +40,18 @@ export async function GET(
     console.log(`Generating power flow tree for equipment: ${equipmentId}`);
     const treeData = await generatePowerFlowTree(equipmentId);
 
-    // Cache the results
-    setCached(cacheKey, treeData);
+    // Cache the results with appropriate TTL
+    setCachedTree(cacheKey, treeData);
 
     return NextResponse.json({
       ...treeData,
       cached: false,
       timestamp: new Date().toISOString(),
       equipmentId
+    }, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=7200, stale-while-revalidate=1800', // 2hr cache, 30min stale
+      }
     });
 
   } catch (error) {

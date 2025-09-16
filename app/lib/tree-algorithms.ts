@@ -20,13 +20,9 @@ const minNodeDistance = 20;
 
 export async function generatePowerFlowTree(selectedEquipmentId: string): Promise<TreeData> {
   try {
-    // Fetch connections from our API
-    const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/equipment-connections`);
-    if (!response.ok) {
-      throw new Error('Failed to fetch equipment connections');
-    }
-
-    const { data: connections } = await response.json();
+    // Import Airtable functions directly to avoid internal API calls
+    const { getEquipmentConnections } = await import('./airtable');
+    const connections = await getEquipmentConnections();
 
     // Build connection map
     const connectionMap = buildConnectionMap(connections);
