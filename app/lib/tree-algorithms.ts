@@ -662,6 +662,10 @@ function generateNodesAndEdges(
   });
 
   // Position upstream equipment
+  let s1ColumnAnchor: number | null = null;
+  let s2ColumnAnchor: number | null = null;
+  let s1RightBarrier: number | null = null;
+
   upstreamByLevel.forEach((levelEquipment, level) => {
     const y = centerY - (level * levelSpacing);
     const s1Group = levelEquipment
@@ -671,6 +675,13 @@ function generateNodesAndEdges(
       .filter(eq => getEquipmentBranch(eq.id) === 'S2')
       .sort((a, b) => a.name.localeCompare(b.name));
     const horizontalGap = nodeSpacing * 2;
+
+    const s1Width = s1Group.length
+      ? s1Group.length * nodeWidth + Math.max(0, s1Group.length - 1) * nodeSpacing
+      : 0;
+    const s2Width = s2Group.length
+      ? s2Group.length * nodeWidth + Math.max(0, s2Group.length - 1) * nodeSpacing
+      : 0;
 
     const renderEquipment = (eq: ProcessedEquipment, x: number) => {
       const branch = getEquipmentBranch(eq.id);
@@ -708,13 +719,16 @@ function generateNodesAndEdges(
 
       if (eq.parentId) {
         const connSource = getUpstreamEdgeSourceNumber(eq.parentId, eq.id);
+        const isS2Connection = connSource === 'S2';
+        const sourceHandle = isS2Connection ? 'br' : 'bl';
+        const targetHandle = isS2Connection ? 'tr' : 'tl';
         edges.push({
           id: `${eq.parentId}-${eq.id}`,
           source: eq.parentId,
           target: eq.id,
           type: 'smoothstep',
-          sourceHandle: 'ts',
-          targetHandle: 'bt',
+          sourceHandle,
+          targetHandle,
           label: connSource === 'S2' || connSource === 'S1' ? connSource : undefined,
           labelShowBg: true,
           labelBgStyle: { fill: '#ffffff', fillOpacity: 0.9, stroke: '#e5e7eb' },
@@ -747,13 +761,17 @@ function generateNodesAndEdges(
             );
 
             if (!existingEdge) {
+              const isAltS2 = altParent.sourceNumber === 'S2';
+              const sourceHandle = isAltS2 ? 'br' : 'bl';
+              const targetHandle = isAltS2 ? 'tr' : 'tl';
+
               edges.push({
                 id: edgeId,
                 source: altParent.id,
                 target: eq.id,
                 type: 'smoothstep',
-                sourceHandle: 'ts',
-                targetHandle: 'bt',
+                sourceHandle,
+                targetHandle,
                 label: isBypass ? 'BYPASS' : altParent.sourceNumber,
                 labelShowBg: true,
                 labelBgStyle: {
@@ -790,17 +808,45 @@ function generateNodesAndEdges(
     };
 
     if (s1Group.length && s2Group.length) {
-      const leftWidth = s1Group.length * nodeWidth + Math.max(0, s1Group.length - 1) * nodeSpacing;
-      const rightWidth = s2Group.length * nodeWidth + Math.max(0, s2Group.length - 1) * nodeSpacing;
-      const leftStartX = centerX - horizontalGap / 2 - leftWidth;
-      const rightStartX = centerX + horizontalGap / 2;
+      const defaultLeft = centerX - horizontalGap / 2 - s1Width;
+      const leftStartX = s1ColumnAnchor !== null ? s1ColumnAnchor : defaultLeft;
+
+      const currentRightBarrier = leftStartX + s1Width;
+      s1RightBarrier = Math.max(s1RightBarrier ?? currentRightBarrier, currentRightBarrier);
+
+      const defaultRight = centerX + horizontalGap / 2;
+      let rightStartX = s2ColumnAnchor !== null ? s2ColumnAnchor : defaultRight;
+      const minimumRight = (s1RightBarrier ?? currentRightBarrier) + horizontalGap;
+      if (rightStartX < minimumRight) {
+        rightStartX = minimumRight;
+      }
+
       positionGroup(s1Group, leftStartX);
       positionGroup(s2Group, rightStartX);
-    } else {
-      const group = s1Group.length ? s1Group : s2Group;
-      const totalWidth = group.length * nodeWidth + Math.max(0, group.length - 1) * nodeSpacing;
-      const startX = centerX - totalWidth / 2;
-      positionGroup(group, startX);
+
+      s1ColumnAnchor = leftStartX;
+      s2ColumnAnchor = rightStartX;
+    } else if (s1Group.length) {
+      const startX = s1ColumnAnchor !== null
+        ? s1ColumnAnchor
+        : centerX - s1Width / 2;
+
+      positionGroup(s1Group, startX);
+      s1ColumnAnchor = startX;
+      const rightEdge = startX + s1Width;
+      s1RightBarrier = Math.max(s1RightBarrier ?? rightEdge, rightEdge);
+    } else if (s2Group.length) {
+      let startX: number;
+      if (s2ColumnAnchor !== null) {
+        startX = s2ColumnAnchor;
+      } else if (s1RightBarrier !== null) {
+        startX = s1RightBarrier + horizontalGap;
+      } else {
+        startX = centerX - s2Width / 2;
+      }
+
+      positionGroup(s2Group, startX);
+      s2ColumnAnchor = startX;
     }
   });
 
@@ -870,55 +916,70 @@ function generateNodesAndEdges(
     });
   });
 
-  // Add edges for the selected equipment to its direct connections
+  // Add edges for the selected equipment to its direct connections (only for bidirectional cases)
   const selectedConnections = connectionMap.get(selectedEquipment.id);
   if (selectedConnections) {
-    // Add edges to upstream equipment (selected equipment receives from these)
-    selectedConnections.upstream.forEach(upstream => {
-      // Only add if the upstream equipment is in our node list
-      const upstreamNode = nodes.find(n => n.id === upstream.id);
-      if (upstreamNode) {
-        edges.push({
-          id: `${upstream.id}-${selectedEquipment.id}`,
-          source: upstream.id,
-          target: selectedEquipment.id,
-          type: 'smoothstep',
-          sourceHandle: 'bl',
-          targetHandle: 'tl',
-          label: upstream.sourceNumber,
-          labelShowBg: true,
-          labelBgStyle: {
-            fill: '#ffffff',
-            fillOpacity: 0.9,
-            stroke: '#e5e7eb'
-          },
-          labelBgPadding: [4, 2],
-          labelBgBorderRadius: 6,
-          labelStyle: {
-            fill: '#0f172a',
-            fontWeight: 600,
-            fontSize: 11
-          },
-          style: {
-            stroke: upstream.sourceNumber === 'S1' ? '#1259ad' : '#3b82f6',
-            strokeWidth: 2,
-            strokeDasharray: '4 2' // Add dashed pattern to distinguish from outgoing edge
-          },
-          data: {
-            sourceNumber: upstream.sourceNumber,
-            connectionType: upstream.connectionType,
-            isAlternate: upstream.connectionType === 'bypass' || upstream.connectionType === 'redundant'
-          }
-        });
-      }
-    });
+    // Check if this equipment has bidirectional connections (appears in both upstream and downstream of the same equipment)
+    const hasBidirectional = selectedConnections.upstream.some(up =>
+      selectedConnections.downstream.some(down => up.id === down.id)
+    );
 
-    // Add edges to downstream equipment (selected equipment feeds these)
-    selectedConnections.downstream.forEach(downstream => {
-      // Only add if the downstream equipment is in our node list
-      const downstreamNode = nodes.find(n => n.id === downstream.id);
-      if (downstreamNode) {
-        edges.push({
+    if (hasBidirectional) {
+      // Add edges to upstream equipment (selected equipment receives from these)
+      selectedConnections.upstream.forEach(upstream => {
+        // Only add if the upstream equipment is in our node list and not already connected
+        const upstreamNode = nodes.find(n => n.id === upstream.id);
+        const existingEdge = edges.find(e =>
+          e.source === upstream.id && e.target === selectedEquipment.id
+        );
+        if (upstreamNode && !existingEdge) {
+          const isS2 = upstream.sourceNumber === 'S2';
+          const sourceHandle = isS2 ? 'br' : 'bl';
+          const targetHandle = isS2 ? 'tr' : 'tl';
+          edges.push({
+            id: `${upstream.id}-${selectedEquipment.id}`,
+            source: upstream.id,
+            target: selectedEquipment.id,
+            type: 'smoothstep',
+            sourceHandle,
+            targetHandle,
+            label: upstream.sourceNumber,
+            labelShowBg: true,
+            labelBgStyle: {
+              fill: '#ffffff',
+              fillOpacity: 0.9,
+              stroke: '#e5e7eb'
+            },
+            labelBgPadding: [4, 2],
+            labelBgBorderRadius: 6,
+            labelStyle: {
+              fill: '#0f172a',
+              fontWeight: 600,
+              fontSize: 11
+            },
+            style: {
+              stroke: upstream.sourceNumber === 'S1' ? '#1259ad' : '#3b82f6',
+              strokeWidth: 2,
+              strokeDasharray: '4 2' // Add dashed pattern to distinguish from outgoing edge
+            },
+            data: {
+              sourceNumber: upstream.sourceNumber,
+              connectionType: upstream.connectionType,
+              isAlternate: upstream.connectionType === 'bypass' || upstream.connectionType === 'redundant'
+            }
+          });
+        }
+      });
+
+      // Add edges to downstream equipment (selected equipment feeds these)
+      selectedConnections.downstream.forEach(downstream => {
+        // Only add if the downstream equipment is in our node list and not already connected
+        const downstreamNode = nodes.find(n => n.id === downstream.id);
+        const existingEdge = edges.find(e =>
+          e.source === selectedEquipment.id && e.target === downstream.id
+        );
+        if (downstreamNode && !existingEdge) {
+          edges.push({
           id: `${selectedEquipment.id}-${downstream.id}`,
           source: selectedEquipment.id,
           target: downstream.id,
@@ -948,9 +1009,10 @@ function generateNodesAndEdges(
             connectionType: downstream.connectionType,
             isAlternate: downstream.connectionType === 'bypass' || downstream.connectionType === 'redundant'
           }
-        });
-      }
-    });
+          });
+        }
+      });
+    }
   }
 
   // Deduplicate edges to prevent React key conflicts
