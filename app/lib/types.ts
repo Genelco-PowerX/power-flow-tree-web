@@ -23,6 +23,12 @@ export interface Equipment {
   parentIds: string[];
   path?: string[];
   branch?: 'S1' | 'S2';
+  connectionType?: 'normal' | 'bypass' | 'redundant';
+  alternateParents?: Array<{
+    id: string;
+    sourceNumber: string;
+    connectionType: 'normal' | 'bypass' | 'redundant';
+  }>;
 }
 
 export interface ProcessedEquipment extends Equipment {
@@ -68,6 +74,8 @@ export interface TreeEdge {
   data?: {
     sourceNumber?: string;
     isLoop?: boolean;
+    connectionType?: 'normal' | 'bypass' | 'redundant';
+    isAlternate?: boolean;
   };
 }
 
@@ -85,12 +93,14 @@ export interface ConnectionMapEntry {
     name: string;
     type: string;
     sourceNumber: string;
+    connectionType?: 'normal' | 'bypass' | 'redundant';
   }>;
   downstream: Array<{
     id: string;
     name: string;
     type: string;
     sourceNumber: string;
+    connectionType?: 'normal' | 'bypass' | 'redundant';
   }>;
 }
 

@@ -38,8 +38,8 @@ export async function generatePowerFlowTree(selectedEquipmentId: string): Promis
     const downstream = traverseDownstream(selectedEquipmentId, connectionMap);
 
     // Process equipment for visualization (loop detection, deduplication)
-    const processedUpstream = processEquipmentForVisualization(upstream);
-    const processedDownstream = processEquipmentForVisualization(downstream);
+    const processedUpstream = processEquipmentForVisualization(upstream, connectionMap);
+    const processedDownstream = processEquipmentForVisualization(downstream, connectionMap);
 
     // Generate nodes and edges for ReactFlow
     const { nodes, edges } = generateNodesAndEdges(
@@ -63,6 +63,32 @@ export async function generatePowerFlowTree(selectedEquipmentId: string): Promis
   }
 }
 
+// Helper function to classify connection types
+function classifyConnectionType(connection: EquipmentConnection): 'normal' | 'bypass' | 'redundant' {
+  // UPS bypass pattern: UPS equipment with S2 source typically indicates bypass
+  if (connection.fromType.includes('UPS') && connection.sourceNumber === 'S2') {
+    return 'bypass';
+  }
+
+  // CUPP (UPS critical panels) connections from UPS are often bypass paths
+  if (connection.fromType.includes('UPS') && connection.toType.includes('CUPP')) {
+    return 'bypass';
+  }
+
+  // S2 connections are typically redundant/backup
+  if (connection.sourceNumber === 'S2') {
+    return 'redundant';
+  }
+
+  // Default to normal
+  return 'normal';
+}
+
+// Helper function to detect UPS equipment
+function isUPSEquipment(type: string, name: string): boolean {
+  return type.includes('UPS') || name.toLowerCase().includes('ups');
+}
+
 function buildConnectionMap(connections: EquipmentConnection[]): ConnectionMap {
   const connectionMap: ConnectionMap = new Map();
 
@@ -78,9 +104,10 @@ function buildConnectionMap(connections: EquipmentConnection[]): ConnectionMap {
     });
   });
 
-  // Build relationships
+  // Build relationships with enhanced classification
   connections.forEach(connection => {
     const sourceNumber = connection.sourceNumber || 'S1';
+    const connectionType = classifyConnectionType(connection);
 
     connection.from.forEach(fromId => {
       connection.to.forEach(toId => {
@@ -91,7 +118,8 @@ function buildConnectionMap(connections: EquipmentConnection[]): ConnectionMap {
             id: toId,
             name: connection.toName,
             type: connection.toType,
-            sourceNumber
+            sourceNumber,
+            connectionType
           });
         }
 
@@ -102,14 +130,15 @@ function buildConnectionMap(connections: EquipmentConnection[]): ConnectionMap {
             id: fromId,
             name: connection.fromName,
             type: connection.fromType,
-            sourceNumber
+            sourceNumber,
+            connectionType
           });
         }
       });
     });
   });
 
-  console.log(`Built connection map with ${connectionMap.size} equipment entries`);
+  console.log(`Built enhanced connection map with ${connectionMap.size} equipment entries`);
   return connectionMap;
 }
 
@@ -148,11 +177,17 @@ function traverseUpstream(
   path: string[] = [],
   branch?: 'S1' | 'S2'
 ): Equipment[] {
-  if (visited.has(equipmentId) || level > 10) {
-    return []; // Prevent cycles and excessive depth
+  if (level > 10) {
+    return []; // Prevent excessive depth
   }
 
-  visited.add(equipmentId);
+  // For bypass connections, allow revisiting equipment to show multiple paths
+  const isBypassPath = path.length > 0 && connectionMap.get(equipmentId)?.upstream.some(u => u.connectionType === 'bypass');
+
+  if (visited.has(equipmentId) && !isBypassPath) {
+    return []; // Prevent cycles for normal paths only
+  }
+
   const currentPath = [...path, equipmentId];
   const equipment: Equipment[] = [];
 
@@ -161,6 +196,11 @@ function traverseUpstream(
 
   connections.upstream.forEach(upstream => {
     const currentBranch: 'S1' | 'S2' = (branch || (upstream.sourceNumber as 'S1' | 'S2') || 'S1');
+    const connectionType = upstream.connectionType || 'normal';
+
+    // Create a new visited set for each path to allow multiple routes to same equipment
+    const newVisited = connectionType === 'bypass' ? new Set([...visited]) : new Set([...visited, equipmentId]);
+
     // Add this equipment
     equipment.push({
       id: upstream.id,
@@ -172,14 +212,15 @@ function traverseUpstream(
       sources: [upstream.sourceNumber],
       parentIds: [equipmentId],
       path: currentPath,
-      branch: currentBranch
+      branch: currentBranch,
+      connectionType
     });
 
     // Recursively traverse
     const childEquipment = traverseUpstream(
       upstream.id,
       connectionMap,
-      new Set(visited),
+      newVisited,
       level + 1,
       currentPath,
       currentBranch
@@ -197,11 +238,17 @@ function traverseDownstream(
   level: number = 1,
   path: string[] = []
 ): Equipment[] {
-  if (visited.has(equipmentId) || level > 10) {
-    return []; // Prevent cycles and excessive depth
+  if (level > 10) {
+    return []; // Prevent excessive depth
   }
 
-  visited.add(equipmentId);
+  // For bypass connections, allow revisiting equipment to show multiple paths
+  const isBypassPath = path.length > 0 && connectionMap.get(equipmentId)?.downstream.some(d => d.connectionType === 'bypass');
+
+  if (visited.has(equipmentId) && !isBypassPath) {
+    return []; // Prevent cycles for normal paths only
+  }
+
   const currentPath = [...path, equipmentId];
   const equipment: Equipment[] = [];
 
@@ -209,6 +256,11 @@ function traverseDownstream(
   if (!connections) return equipment;
 
   connections.downstream.forEach(downstream => {
+    const connectionType = downstream.connectionType || 'normal';
+
+    // Create a new visited set for each path to allow multiple routes to same equipment
+    const newVisited = connectionType === 'bypass' ? new Set([...visited]) : new Set([...visited, equipmentId]);
+
     // Add this equipment
     equipment.push({
       id: downstream.id,
@@ -219,14 +271,15 @@ function traverseDownstream(
       sourceNumber: downstream.sourceNumber,
       sources: [downstream.sourceNumber],
       parentIds: [equipmentId],
-      path: currentPath
+      path: currentPath,
+      connectionType
     });
 
     // Recursively traverse
     const childEquipment = traverseDownstream(
       downstream.id,
       connectionMap,
-      new Set(visited),
+      newVisited,
       level + 1,
       currentPath
     );
@@ -236,37 +289,106 @@ function traverseDownstream(
   return equipment;
 }
 
-function processEquipmentForVisualization(equipment: Equipment[]): ProcessedEquipment[] {
-  // First, deduplicate equipment while preserving multiple sources
+function resolveBranchFromPath(eq: Equipment, connectionMap: ConnectionMap): 'S1' | 'S2' | undefined {
+  if (!eq.path || eq.path.length === 0) {
+    return eq.branch as 'S1' | 'S2' | undefined || (eq.sourceNumber as 'S1' | 'S2' | undefined);
+  }
+
+  const downstreamId = eq.path[eq.path.length - 1];
+  const downstreamEntry = connectionMap.get(downstreamId);
+  const relation = downstreamEntry?.upstream.find(u => u.id === eq.id);
+
+  if (relation?.sourceNumber === 'S2') return 'S2';
+  if (relation?.sourceNumber === 'S1') return 'S1';
+
+  return eq.branch as 'S1' | 'S2' | undefined || (eq.sourceNumber as 'S1' | 'S2' | undefined);
+}
+
+function processEquipmentForVisualization(equipment: Equipment[], connectionMap: ConnectionMap): ProcessedEquipment[] {
+  // First, deduplicate equipment while preserving multiple sources and connection types
   const equipmentById = new Map<string, ProcessedEquipment>();
 
   equipment.forEach(eq => {
+    const branchFromPath = resolveBranchFromPath(eq, connectionMap);
+    const initialSources: string[] = [];
+    if (eq.sourceNumber) {
+      initialSources.push(eq.sourceNumber);
+    }
+
     if (!equipmentById.has(eq.id)) {
       equipmentById.set(eq.id, {
         ...eq,
-        sources: [eq.sourceNumber || 'S1'],
-        parentIds: [eq.parentId].filter(Boolean) as string[]
+        sources: initialSources.length ? initialSources : ['S1'],
+        parentIds: [eq.parentId].filter(Boolean) as string[],
+        alternateParents: eq.connectionType && eq.connectionType !== 'normal' ? [{
+          id: eq.parentId || '',
+          sourceNumber: eq.sourceNumber || 'S1',
+          connectionType: eq.connectionType
+        }] : [],
+        branch: branchFromPath || (eq.branch as 'S1' | 'S2' | undefined)
       });
+      return;
+    }
+
+    const existing = equipmentById.get(eq.id)!;
+    const branchCandidate = (branchFromPath || eq.branch || eq.sourceNumber) as 'S1' | 'S2' | undefined;
+
+    // Merge multiple sources/paths
+    if (eq.sourceNumber && !existing.sources.includes(eq.sourceNumber)) {
+      existing.sources.push(eq.sourceNumber);
+    }
+    if (eq.parentId && !existing.parentIds.includes(eq.parentId)) {
+      existing.parentIds.push(eq.parentId);
+    }
+
+    // Track alternate parents for bypass/redundant connections
+    if (eq.connectionType && eq.connectionType !== 'normal' && eq.parentId) {
+      if (!existing.alternateParents) {
+        existing.alternateParents = [];
+      }
+      const alternateParent = {
+        id: eq.parentId,
+        sourceNumber: eq.sourceNumber || 'S1',
+        connectionType: eq.connectionType
+      };
+
+      // Check if this alternate parent already exists
+      const existsAlready = existing.alternateParents.some(alt =>
+        alt.id === alternateParent.id && alt.connectionType === alternateParent.connectionType
+      );
+
+      if (!existsAlready) {
+        existing.alternateParents.push(alternateParent);
+      }
+    }
+
+    const isCloserPath = eq.level < existing.level;
+    const branchConflict = branchCandidate && existing.branch && branchCandidate !== existing.branch;
+
+    // For S1/S2 convergence at utilities: merge paths, prefer S1 as primary
+    const isUtilityOrGenerator = eq.type.includes('UTILITY') || eq.type.includes('GEN') || eq.type.includes('MV-SWGR');
+    if (isUtilityOrGenerator && existing.sources.includes('S1') && existing.sources.includes('S2')) {
+      // Force S1 as primary branch for utilities
+      existing.branch = 'S1';
+      existing.sourceNumber = 'S1';
+    } else if (isCloserPath || (branchConflict && branchCandidate === 'S2' && eq.level === existing.level)) {
+      existing.level = eq.level;
+      existing.parentId = eq.parentId;
+      existing.path = eq.path;
+      if (eq.sourceNumber) {
+        existing.sourceNumber = eq.sourceNumber;
+      }
+      if (branchCandidate) {
+        existing.branch = branchCandidate;
+      }
+      if (eq.connectionType) {
+        existing.connectionType = eq.connectionType;
+      }
     } else {
-      // Merge multiple sources/paths
-      const existing = equipmentById.get(eq.id)!;
-      if (eq.sourceNumber && !existing.sources.includes(eq.sourceNumber)) {
-        existing.sources.push(eq.sourceNumber);
-      }
-      if (eq.parentId && !existing.parentIds.includes(eq.parentId)) {
-        existing.parentIds.push(eq.parentId);
-      }
-      // Prefer S1 branch when conflicting
-      if (!existing.branch) {
-        existing.branch = eq.branch;
-      } else if (eq.branch === 'S1') {
+      if (!existing.branch && branchCandidate) {
+        existing.branch = branchCandidate;
+      } else if (branchCandidate === 'S1') {
         existing.branch = 'S1';
-      }
-      // Use shortest path (lowest level)
-      if (eq.level < existing.level) {
-        existing.level = eq.level;
-        existing.parentId = eq.parentId;
-        existing.path = eq.path;
       }
     }
   });
@@ -274,12 +396,12 @@ function processEquipmentForVisualization(equipment: Equipment[]): ProcessedEqui
   let processedEquipment = Array.from(equipmentById.values());
 
   // Detect and process loop groups (matching original extension logic)
-  processedEquipment = processLoopGroups(processedEquipment);
+  processedEquipment = processLoopGroups(processedEquipment, connectionMap);
 
   return processedEquipment;
 }
 
-function processLoopGroups(equipment: ProcessedEquipment[]): ProcessedEquipment[] {
+function processLoopGroups(equipment: ProcessedEquipment[], connectionMap: ConnectionMap): ProcessedEquipment[] {
   const loopGroups: Map<string, LoopGroup> = new Map();
 
   // Detect loop patterns (ported from original extension)
@@ -339,11 +461,57 @@ function processLoopGroups(equipment: ProcessedEquipment[]): ProcessedEquipment[
       const startEquipment = sortedEquipment[0];
       const endEquipment = sortedEquipment[sortedEquipment.length - 1];
 
-      // Determine the member closest to the selected equipment (smallest level)
-      const closestToSelected = group.equipment.reduce((min, e) =>
-        e.level < min.level ? e : min,
-        group.equipment[0]
-      );
+      // Determine the member closest to the selected equipment (smallest level).
+      // When levels are equal, prefer S2 branches so loop reps stay on the S2 side.
+      const closestToSelected = group.equipment.reduce((best, candidate) => {
+        if (!best) return candidate;
+        if (candidate.level < best.level) return candidate;
+        if (candidate.level === best.level) {
+          const candidateBranch = (candidate.branch as 'S1' | 'S2' | undefined)
+            || (candidate.sourceNumber as 'S1' | 'S2' | undefined)
+            || (candidate.sources || []).find(source => source === 'S1' || source === 'S2') as 'S1' | 'S2' | undefined;
+          const bestBranch = (best.branch as 'S1' | 'S2' | undefined)
+            || (best.sourceNumber as 'S1' | 'S2' | undefined)
+            || (best.sources || []).find(source => source === 'S1' || source === 'S2') as 'S1' | 'S2' | undefined;
+          if (candidateBranch === 'S2' && bestBranch !== 'S2') {
+            return candidate;
+          }
+        }
+        return best;
+      }, group.equipment[0]);
+
+      const prioritizedSource = (closestToSelected.sources || []).find(source => source === 'S1' || source === 'S2');
+      const branchHint = (closestToSelected.branch as 'S1' | 'S2' | undefined)
+        || (closestToSelected.sourceNumber as 'S1' | 'S2' | undefined)
+        || (prioritizedSource as 'S1' | 'S2' | undefined);
+
+      const upstreamEntry = connectionMap.get(closestToSelected.id);
+      let loopParentId = closestToSelected.parentId;
+      if (closestToSelected.parentIds && closestToSelected.parentIds.length) {
+        if (branchHint) {
+          const matchingParent = closestToSelected.parentIds.find(pid => {
+            const relation = upstreamEntry?.upstream.find(u => u.id === pid);
+            return relation?.sourceNumber === branchHint;
+          });
+          if (matchingParent) {
+            loopParentId = matchingParent;
+          } else if (!loopParentId) {
+            loopParentId = closestToSelected.parentIds[0];
+          }
+        } else if (!loopParentId) {
+          loopParentId = closestToSelected.parentIds[0];
+        }
+      }
+
+      const parentRelation = loopParentId
+        ? upstreamEntry?.upstream.find(u => u.id === loopParentId)
+        : undefined;
+
+      let loopBranch = (parentRelation?.sourceNumber as 'S1' | 'S2' | undefined)
+        || branchHint
+        || (group.sources.includes('S2') && !group.sources.includes('S1') ? 'S2'
+          : group.sources.includes('S1') ? 'S1'
+          : undefined);
 
       // Create loop group representative
       const loopGroupRep: ProcessedEquipment = {
@@ -352,11 +520,11 @@ function processLoopGroups(equipment: ProcessedEquipment[]): ProcessedEquipment[
         type: 'RING BUS',
         level: closestToSelected.level,
         // Parent should be the downstream child directly connected to the loop
-        parentId: closestToSelected.parentId,
+        parentId: loopParentId,
         sources: group.sources,
-        parentIds: closestToSelected.parentId ? [closestToSelected.parentId] : [],
+        parentIds: loopParentId ? [loopParentId] : [],
         isLoopGroup: true,
-        branch: group.equipment.some(e => e.branch === 'S1') ? 'S1' : (group.equipment.some(e => e.branch === 'S2') ? 'S2' : undefined),
+        branch: loopBranch,
         loopGroupData: {
           equipment: group.equipment,
           startEquipment,
@@ -574,6 +742,58 @@ function generateNodesAndEdges(
           }
         });
       }
+
+      // Add bypass/alternate connection edges (avoid duplicates)
+      if (eq.alternateParents && eq.alternateParents.length > 0) {
+        eq.alternateParents.forEach((altParent, altIndex) => {
+          // Only add bypass edges if the parent is actually in the tree
+          const parentInTree = [...upstream, ...downstream].some(e => e.id === altParent.id) || altParent.id === selectedEquipment.id;
+
+          if (parentInTree) {
+            const isBypass = altParent.connectionType === 'bypass';
+            // Create unique edge ID to prevent collisions
+            const edgeId = `bypass-${altParent.id}-${eq.id}-${altParent.connectionType}-${altIndex}`;
+
+            // Check if this edge already exists to prevent duplicates
+            const existingEdge = edges.find(e =>
+              (e.source === altParent.id && e.target === eq.id) ||
+              (e.source === eq.id && e.target === altParent.id)
+            );
+
+            if (!existingEdge) {
+              edges.push({
+                id: edgeId,
+                source: altParent.id,
+                target: eq.id,
+                type: 'smoothstep',
+                sourceHandle: 'ts',
+                targetHandle: 'bt',
+                label: isBypass ? 'BYPASS' : altParent.sourceNumber,
+                labelShowBg: true,
+                labelBgStyle: {
+                  fill: isBypass ? '#fef3c7' : '#ffffff',
+                  fillOpacity: 0.9,
+                  stroke: isBypass ? '#f59e0b' : '#e5e7eb'
+                },
+                labelBgPadding: [4, 2],
+                labelBgBorderRadius: 6,
+                labelStyle: { fill: isBypass ? '#92400e' : '#0f172a', fontWeight: 600, fontSize: 10 },
+                style: {
+                  stroke: isBypass ? '#f59e0b' : (altParent.sourceNumber === 'S2' ? '#2b81e5' : '#1259ad'),
+                  strokeWidth: isBypass ? 3 : 2,
+                  strokeDasharray: isBypass ? '8 4' : (altParent.sourceNumber === 'S2' ? '6 4' : undefined),
+                  opacity: isBypass ? 0.8 : 0.6
+                },
+                data: {
+                  sourceNumber: altParent.sourceNumber,
+                  connectionType: altParent.connectionType,
+                  isAlternate: true
+                }
+              });
+            }
+          }
+        });
+      }
     });
   });
 
@@ -643,6 +863,34 @@ function generateNodesAndEdges(
     });
   });
 
-  console.log(`Generated ${nodes.length} nodes and ${edges.length} edges`);
-  return { nodes, edges };
+  // Deduplicate edges to prevent React key conflicts
+  const uniqueEdges: TreeEdge[] = [];
+  const edgeMap = new Map<string, TreeEdge>();
+
+  edges.forEach(edge => {
+    // Create a canonical key based on source and target (regardless of ID)
+    const canonicalKey = `${edge.source}-${edge.target}`;
+
+    if (!edgeMap.has(canonicalKey)) {
+      edgeMap.set(canonicalKey, edge);
+      uniqueEdges.push(edge);
+    } else {
+      // If we have a duplicate, prefer bypass/alternate edges over normal ones
+      const existingEdge = edgeMap.get(canonicalKey)!;
+      const isCurrentBypass = edge.data?.connectionType === 'bypass';
+      const isExistingBypass = existingEdge.data?.connectionType === 'bypass';
+
+      if (isCurrentBypass && !isExistingBypass) {
+        // Replace normal edge with bypass edge
+        const index = uniqueEdges.findIndex(e => e.id === existingEdge.id);
+        if (index !== -1) {
+          uniqueEdges[index] = edge;
+          edgeMap.set(canonicalKey, edge);
+        }
+      }
+    }
+  });
+
+  console.log(`Generated ${nodes.length} nodes and ${uniqueEdges.length} edges (${edges.length - uniqueEdges.length} duplicates removed)`);
+  return { nodes, edges: uniqueEdges };
 }
