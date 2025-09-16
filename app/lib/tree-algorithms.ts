@@ -33,13 +33,17 @@ export async function generatePowerFlowTree(selectedEquipmentId: string): Promis
       throw new Error(`Equipment with ID ${selectedEquipmentId} not found`);
     }
 
-    // Traverse upstream and downstream
+    // Traverse upstream and downstream from the selected equipment
     const upstream = traverseUpstream(selectedEquipmentId, connectionMap);
     const downstream = traverseDownstream(selectedEquipmentId, connectionMap);
 
+    // Filter out the selected equipment from results (safety check for circular dependencies)
+    const filteredUpstream = upstream.filter(eq => eq.id !== selectedEquipmentId);
+    const filteredDownstream = downstream.filter(eq => eq.id !== selectedEquipmentId);
+
     // Process equipment for visualization (loop detection, deduplication)
-    const processedUpstream = processEquipmentForVisualization(upstream, connectionMap);
-    const processedDownstream = processEquipmentForVisualization(downstream, connectionMap);
+    const processedUpstream = processEquipmentForVisualization(filteredUpstream, connectionMap);
+    const processedDownstream = processEquipmentForVisualization(filteredDownstream, connectionMap);
 
     // Generate nodes and edges for ReactFlow
     const { nodes, edges } = generateNodesAndEdges(
@@ -668,18 +672,12 @@ function generateNodesAndEdges(
 
   // Position upstream equipment
   upstreamByLevel.forEach((levelEquipment, level) => {
-    // Ensure S1 are on the left, S2 on the right
-    levelEquipment.sort((a, b) => {
-      const av = a.branch === 'S2' ? 1 : 0;
-      const bv = b.branch === 'S2' ? 1 : 0;
-      return av - bv; // S1(0) before S2(1)
-    });
     const y = centerY - (level * levelSpacing);
-    const totalWidth = levelEquipment.length * nodeWidth + (levelEquipment.length - 1) * nodeSpacing;
-    const startX = centerX - totalWidth / 2;
+    const s1Group = levelEquipment.filter(eq => getEquipmentBranch(eq.id) === 'S1');
+    const s2Group = levelEquipment.filter(eq => getEquipmentBranch(eq.id) === 'S2');
+    const horizontalGap = nodeSpacing * 1.5;
 
-    levelEquipment.forEach((eq, index) => {
-      const x = startX + index * (nodeWidth + nodeSpacing);
+    const renderEquipment = (eq: ProcessedEquipment, x: number) => {
       const branch = getEquipmentBranch(eq.id);
       const color = getNodeColor(branch);
 
@@ -713,7 +711,6 @@ function generateNodesAndEdges(
         }
       });
 
-      // Add edge to parent
       if (eq.parentId) {
         const connSource = getUpstreamEdgeSourceNumber(eq.parentId, eq.id);
         edges.push({
@@ -730,10 +727,8 @@ function generateNodesAndEdges(
           labelBgBorderRadius: 6,
           labelStyle: { fill: '#0f172a', fontWeight: 600, fontSize: 11 },
           style: {
-            // Edge color reflects the specific connection's source number
             stroke: connSource === 'S2' ? '#2b81e5' : '#1259ad',
             strokeWidth: 2,
-            // Edge style reflects the specific connection's source number
             strokeDasharray: connSource === 'S2' ? '6 4' : undefined
           },
           data: {
@@ -743,18 +738,14 @@ function generateNodesAndEdges(
         });
       }
 
-      // Add bypass/alternate connection edges (avoid duplicates)
       if (eq.alternateParents && eq.alternateParents.length > 0) {
         eq.alternateParents.forEach((altParent, altIndex) => {
-          // Only add bypass edges if the parent is actually in the tree
           const parentInTree = [...upstream, ...downstream].some(e => e.id === altParent.id) || altParent.id === selectedEquipment.id;
 
           if (parentInTree) {
             const isBypass = altParent.connectionType === 'bypass';
-            // Create unique edge ID to prevent collisions
             const edgeId = `bypass-${altParent.id}-${eq.id}-${altParent.connectionType}-${altIndex}`;
 
-            // Check if this edge already exists to prevent duplicates
             const existingEdge = edges.find(e =>
               (e.source === altParent.id && e.target === eq.id) ||
               (e.source === eq.id && e.target === altParent.id)
@@ -794,7 +785,28 @@ function generateNodesAndEdges(
           }
         });
       }
-    });
+    };
+
+    const positionGroup = (group: ProcessedEquipment[], startX: number) => {
+      group.forEach((eq, index) => {
+        const x = startX + index * (nodeWidth + nodeSpacing);
+        renderEquipment(eq, x);
+      });
+    };
+
+    if (s1Group.length && s2Group.length) {
+      const leftWidth = s1Group.length * nodeWidth + Math.max(0, s1Group.length - 1) * nodeSpacing;
+      const rightWidth = s2Group.length * nodeWidth + Math.max(0, s2Group.length - 1) * nodeSpacing;
+      const leftStartX = centerX - horizontalGap / 2 - leftWidth;
+      const rightStartX = centerX + horizontalGap / 2;
+      positionGroup(s1Group, leftStartX);
+      positionGroup(s2Group, rightStartX);
+    } else {
+      const group = s1Group.length ? s1Group : s2Group;
+      const totalWidth = group.length * nodeWidth + Math.max(0, group.length - 1) * nodeSpacing;
+      const startX = centerX - totalWidth / 2;
+      positionGroup(group, startX);
+    }
   });
 
   // Group downstream equipment by level
