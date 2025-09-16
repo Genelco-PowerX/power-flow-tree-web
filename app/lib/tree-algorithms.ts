@@ -725,7 +725,7 @@ function generateNodesAndEdges(
           target: eq.id,
           type: 'smoothstep',
           sourceHandle: 'b',
-          targetHandle: 't',
+          targetHandle: 'bt',
           style: {
             stroke: color,
             strokeWidth: 2
@@ -888,7 +888,7 @@ function generateNodesAndEdges(
           target: eq.id,
           type: 'smoothstep',
           sourceHandle: 'b',
-          targetHandle: 't',
+          targetHandle: 'bt',
           style: {
             stroke: color,
             strokeWidth: 2
