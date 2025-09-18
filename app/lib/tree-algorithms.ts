@@ -6,17 +6,56 @@ import {
   TreeEdge,
   TreeData,
   ConnectionMap,
-  LoopGroup
+  LoopGroup,
+  EquipmentLayoutInfo,
+  Position,
+  CollisionInfo,
+  SubtreeDimensions,
+  PlacementTree,
+  PlacementNode,
+  LayoutValidationResult
 } from './types';
 
-// Constants for layout (matching original extension)
+// Constants for layout - UPDATED for natural branching and collision prevention
 const nodeWidth = 180;
 const nodeHeight = 70;
-const nodeSpacing = 120;
-const levelSpacing = 300;
+const minimumNodeSpacing = 200;        // Clear horizontal gap edge-to-edge between siblings
+const nodeCenterSpacing = nodeWidth + minimumNodeSpacing; // Center-to-center spacing (380px)
+const levelSpacing = 150;              // Vertical spacing between logical levels (across tree depth)
+const localBranchOffset = 120;         // Base horizontal bias between branches
+const branchSpreadIncrement = 60;      // Additional spread per upstream level
 const centerX = 400;
 const centerY = 300;
-const minNodeDistance = 20;
+const lateralUpsOffset = nodeWidth / 2 + 100;  // Center-to-center offset for UPS/MDS pairing (100px edge gap)
+const upsMdsPairOffset = nodeWidth / 2 + 100;
+const collisionPadding = 12;           // Extra gap when nudging nodes apart
+
+const categoryVerticalSpacing = 150;
+const categoryVerticalOffsets: Record<string, number> = {
+  SELECTED: 0,
+  PDU: 0,
+  ATS: -1,
+  RING_BUS: -2,
+  CDS: -2,
+  UPS_WITH_MDS: -3,
+  UPS: -3,
+  MDS: -3,
+  SWGR: -3,
+  DISTRIBUTION: -3,
+  GEN: -4,
+  GENERATOR: -4,
+  TX: -4,
+  TRANSFORMER: -4,
+  UTILITY: -5,
+  SUBSTATION: -5,
+  END_EQUIPMENT: 1
+};
+
+interface LayoutMetrics {
+  maxRowWidthPx: number;
+  maxRowCount: number;
+  firstSplitLevel: number | null;
+}
 
 export async function generatePowerFlowTree(selectedEquipmentId: string): Promise<TreeData> {
   try {
@@ -42,7 +81,11 @@ export async function generatePowerFlowTree(selectedEquipmentId: string): Promis
     const filteredDownstream = downstream.filter(eq => eq.id !== selectedEquipmentId);
 
     // Process equipment for visualization (loop detection, deduplication)
-    const processedUpstream = processEquipmentForVisualization(filteredUpstream, connectionMap);
+    const processedUpstream = ensureCompleteUpstreamCoverage(
+      selectedEquipment,
+      processEquipmentForVisualization(filteredUpstream, connectionMap),
+      connectionMap
+    );
     const processedDownstream = processEquipmentForVisualization(filteredDownstream, connectionMap);
 
     // Generate nodes and edges for ReactFlow
@@ -557,8 +600,1478 @@ function processLoopGroups(equipment: ProcessedEquipment[], connectionMap: Conne
     }
   });
 
+  // CRITICAL FIX: Fix levels after parent rewiring to use loop group levels
+  console.log(`🔄 LEVEL FIX: Fixing levels after parent rewiring for ${processedEquipment.length} equipment`);
+
+  const equipmentMap = new Map<string, ProcessedEquipment>();
+  processedEquipment.forEach(eq => equipmentMap.set(eq.id, eq));
+
+  // Simple fix: For each equipment, if parent exists, set level = parent.level + 1
+  processedEquipment.forEach(eq => {
+    if (eq.parentId) {
+      const parent = equipmentMap.get(eq.parentId);
+      if (parent) {
+        const oldLevel = eq.level;
+        const newLevel = parent.level + 1;
+        if (oldLevel !== newLevel) {
+          eq.level = newLevel;
+          console.log(`🔄 LEVEL FIX: ${eq.name} → level ${oldLevel} → ${newLevel} (parent: ${parent.name} at level ${parent.level})`);
+        }
+      }
+    }
+  });
+
+  console.log(`🔄 LEVEL FIX: After level fix, equipment levels:`, processedEquipment.map(eq => `${eq.name}:${eq.level}`))
+
   console.log(`Processed ${processedEquipment.length} equipment items (${loopGroups.size} loop groups created). Rewired ${replacementMap.size} member references to loop reps.`);
   return processedEquipment;
+}
+
+function ensureCompleteUpstreamCoverage(
+  selectedEquipment: ProcessedEquipment,
+  upstream: ProcessedEquipment[],
+  connectionMap: ConnectionMap
+): ProcessedEquipment[] {
+  const equipmentMap = new Map<string, ProcessedEquipment>();
+  upstream.forEach(eq => equipmentMap.set(eq.id, eq));
+
+  const queue: Array<{ id: string; level: number }> = [{
+    id: selectedEquipment.id,
+    level: selectedEquipment.level ?? 0
+  }];
+  const visited = new Set<string>();
+
+  while (queue.length) {
+    const { id, level } = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+
+    const connections = connectionMap.get(id);
+    if (!connections) continue;
+
+    connections.upstream.forEach(parent => {
+      const parentLevel = level + 1;
+      const existing = equipmentMap.get(parent.id);
+
+      if (!existing) {
+        const parentName = parent.name || 'Unknown Equipment';
+        const parentType = parent.type || 'UNKNOWN';
+        const inferred: ProcessedEquipment = {
+          id: parent.id,
+          name: parentName,
+          type: parentType,
+          level: parentLevel,
+          parentId: id,
+          sourceNumber: parent.sourceNumber,
+          sources: parent.sourceNumber ? [parent.sourceNumber] : ['S1'],
+          parentIds: [id],
+          branch: (parent.sourceNumber as 'S1' | 'S2' | undefined) || 'S1',
+          connectionType: parent.connectionType || 'normal',
+          path: [id]
+        };
+
+        upstream.push(inferred);
+        equipmentMap.set(inferred.id, inferred);
+        queue.push({ id: inferred.id, level: parentLevel });
+        return;
+      }
+
+      if (!existing.parentIds) {
+        existing.parentIds = [];
+      }
+      if (!existing.parentIds.includes(id)) {
+        existing.parentIds.push(id);
+      }
+      if (!existing.sources) {
+        existing.sources = [];
+      }
+      if (parent.sourceNumber && !existing.sources.includes(parent.sourceNumber)) {
+        existing.sources.push(parent.sourceNumber);
+      }
+      if (!existing.parentId) {
+        existing.parentId = id;
+      }
+      if (!existing.branch && parent.sourceNumber) {
+        existing.branch = parent.sourceNumber as 'S1' | 'S2';
+      }
+      queue.push({ id: parent.id, level: parentLevel });
+    });
+  }
+
+  return upstream;
+}
+
+// Equipment classification functions for enhanced layout
+function categorizeByType(type: string): 'UTILITY' | 'GENERATOR' | 'TRANSFORMER' | 'DISTRIBUTION' | 'END_EQUIPMENT' {
+  const typeUpper = type.toUpperCase();
+
+  if (typeUpper.includes('UTILITY') || typeUpper.includes('PADMOUNT') || typeUpper.includes('PAD MOUNT')) {
+    return 'UTILITY';
+  }
+  if (typeUpper.includes('MDS') || typeUpper.includes('SWGR') || typeUpper.includes('SWITCHGEAR')) {
+    return 'DISTRIBUTION';
+  }
+  if (typeUpper.includes('UPS')) {
+    return 'DISTRIBUTION';
+  }
+  if (typeUpper.includes('TX') || typeUpper.includes('TRANSFORMER') || typeUpper.includes('XFMR')) {
+    return 'TRANSFORMER';
+  }
+  if (typeUpper.includes('GEN') || typeUpper.includes('GENERATOR')) {
+    return 'GENERATOR';
+  }
+  return 'END_EQUIPMENT';
+}
+
+function determineBranch(equipment: ProcessedEquipment): 'S1' | 'S2' {
+  // Priority order for branch determination
+  if (equipment.branch === 'S1' || equipment.branch === 'S2') {
+    return equipment.branch;
+  }
+  if (equipment.sourceNumber === 'S1' || equipment.sourceNumber === 'S2') {
+    return equipment.sourceNumber as 'S1' | 'S2';
+  }
+  if (equipment.sources.includes('S2')) {
+    return 'S2';
+  }
+  return 'S1'; // Default to S1
+}
+
+function isLateralConnection(equipment: ProcessedEquipment, connectionMap: ConnectionMap): boolean {
+  // UPS equipment that forms a bidirectional loop with its parent should sit laterally
+  const isUps = equipment.type.toUpperCase().includes('UPS');
+  const parentId = equipment.parentId;
+  if (!isUps || !parentId) {
+    return false;
+  }
+
+  const connections = connectionMap.get(equipment.id);
+  if (!connections) return false;
+
+  const returnsToParent = connections.downstream.some(child => child.id === parentId);
+  const receivesFromParent = connections.upstream.some(parent => parent.id === parentId);
+
+  return returnsToParent && receivesFromParent;
+}
+
+function classifyEquipmentForLayout(
+  equipment: ProcessedEquipment[],
+  connectionMap: ConnectionMap
+): EquipmentLayoutInfo[] {
+  return equipment.map(eq => {
+    const isUps = eq.type.toUpperCase().includes('UPS');
+    const parentRelation = eq.parentId
+      ? connectionMap.get(eq.id)?.upstream.find(parent => parent.id === eq.parentId)
+      : undefined;
+    const parentIsMds = parentRelation?.type?.toUpperCase().includes('MDS') ?? false;
+
+    let isLateral = isLateralConnection(eq, connectionMap);
+    if (!isLateral && isUps && parentIsMds) {
+      isLateral = true;
+    }
+
+    let lateralInfo: EquipmentLayoutInfo['lateralInfo'] = undefined;
+
+    if (isLateral && eq.parentId) {
+      const branch = determineBranch(eq);
+      // UPS equipment should always be positioned on the left side of MDS for tight coupling
+      lateralInfo = {
+        parentId: eq.parentId,
+        direction: isUps ? 'left' : (branch === 'S2' ? 'right' : 'left'),
+        offset: lateralUpsOffset
+      };
+    }
+
+    return {
+      equipment: eq,
+      branch: determineBranch(eq),
+      typeCategory: categorizeByType(eq.type),
+      level: eq.level,
+      isLateral,
+      parentId: eq.parentId,
+      lateralInfo
+    };
+  });
+}
+
+// CORRECTED: Natural parent-child branching (NOT global segregation)
+function positionEquipmentByParent(
+  _equipment: EquipmentLayoutInfo[],
+  _level: number,
+  _positions: Map<string, Position>
+): void {
+  // Deprecated: retained for backward compatibility with older planning notes.
+  // Span-based layout now handles positioning.
+}
+
+// CORRECTED: Natural parent-child grouping with minimal spacing - children stay close to parent
+function positionChildrenFromParent(
+  _children: EquipmentLayoutInfo[],
+  _parentPos: Position,
+  _y: number,
+  _positions: Map<string, Position>
+): void {
+  // Deprecated: span-based layout handles placement directly.
+}
+
+function buildPlacementTree(
+  selected: ProcessedEquipment,
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>,
+  connectionMap: ConnectionMap
+): PlacementTree {
+  const nodes = new Map<string, PlacementNode>();
+
+  layoutInfoMap.forEach(info => {
+    nodes.set(info.equipment.id, {
+      id: info.equipment.id,
+      parentId: info.parentId,
+      info,
+      children: {
+        s1: [],
+        s2: [],
+        laterals: []
+      }
+    });
+  });
+
+  const queue: string[] = [selected.id];
+  const visited = new Set<string>();
+
+  while (queue.length) {
+    const id = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+
+    const node = nodes.get(id);
+    if (!node) continue;
+
+    const connections = connectionMap.get(id);
+    if (!connections) continue;
+
+    connections.upstream.forEach(parent => {
+      const parentInfo = layoutInfoMap.get(parent.id);
+      if (!parentInfo) return;
+
+      const parentNode = nodes.get(parent.id);
+      if (!parentNode) return;
+
+      parentNode.parentId = id;
+
+      if (parentInfo.isLateral) {
+        node.children.laterals.push(parent.id);
+        if (!visited.has(parent.id)) {
+          queue.push(parent.id);
+        }
+        return;
+      }
+
+      if (parentInfo.branch === 'S2') {
+        node.children.s2.push(parent.id);
+      } else {
+        node.children.s1.push(parent.id);
+      }
+
+      if (!visited.has(parent.id)) {
+        queue.push(parent.id);
+      }
+    });
+  }
+
+  return { root: selected.id, rootId: selected.id, nodes };
+}
+
+function computeRowWidthPx(nodeCount: number): number {
+  if (nodeCount <= 1) return nodeWidth;
+  return nodeCenterSpacing * (nodeCount - 1);
+}
+
+function computeLayoutMetrics(tree: PlacementTree): LayoutMetrics {
+  let maxRowCount = 0;
+  let firstSplitLevel: number | null = null;
+  const levelCounts = new Map<number, number>();
+
+  tree.nodes.forEach(node => {
+    const { info, children } = node;
+    if (!info.isLateral) {
+      const count = (levelCounts.get(info.level) ?? 0) + 1;
+      levelCounts.set(info.level, count);
+      if (count > maxRowCount) {
+        maxRowCount = count;
+      }
+    }
+
+    if (firstSplitLevel === null && children.s1.length > 0 && children.s2.length > 0) {
+      firstSplitLevel = info.level;
+    }
+  });
+
+  if (maxRowCount < 1) {
+    maxRowCount = 1;
+  }
+
+  return {
+    maxRowWidthPx: computeRowWidthPx(maxRowCount),
+    maxRowCount,
+    firstSplitLevel
+  };
+}
+
+function createLevelBaselines(
+  layoutInfo: Iterable<EquipmentLayoutInfo>,
+  selectedLevel: number
+): Map<number, number> {
+  const baselines = new Map<number, number>();
+  baselines.set(selectedLevel, centerY);
+
+  for (const info of layoutInfo) {
+    if (!baselines.has(info.level)) {
+      baselines.set(info.level, centerY - (info.level - selectedLevel) * levelSpacing);
+    }
+  }
+
+  return baselines;
+}
+
+function computeSubtreeSpan(
+  nodeId: string,
+  tree: PlacementTree,
+  spanMap: Map<string, SubtreeDimensions>,
+  visited: Set<string> = new Set(),
+  loopGroupMemberIds: Set<string> = new Set()
+): SubtreeDimensions {
+  if (spanMap.has(nodeId)) {
+    return spanMap.get(nodeId)!;
+  }
+
+  // Cycle detection to prevent infinite recursion
+  if (visited.has(nodeId)) {
+    const fallback: SubtreeDimensions = {
+      width: nodeWidth,
+      leftBias: nodeWidth / 2,
+      rightBias: nodeWidth / 2
+    };
+    spanMap.set(nodeId, fallback);
+    return fallback;
+  }
+
+  const node = tree.nodes.get(nodeId);
+  if (!node) {
+    const fallback: SubtreeDimensions = {
+      width: nodeWidth,
+      leftBias: nodeWidth / 2,
+      rightBias: nodeWidth / 2
+    };
+    spanMap.set(nodeId, fallback);
+    return fallback;
+  }
+
+  // If this node is an individual loop group member, return minimal width
+  if (loopGroupMemberIds.has(nodeId)) {
+    const minimalSpan: SubtreeDimensions = {
+      width: 0, // Don't contribute to spacing
+      leftBias: 0,
+      rightBias: 0
+    };
+    spanMap.set(nodeId, minimalSpan);
+    return minimalSpan;
+  }
+
+  // Add current node to visited set
+  visited.add(nodeId);
+
+  // Check for excessive recursion depth
+  if (visited.size > 50) {
+    const fallback: SubtreeDimensions = {
+      width: nodeWidth,
+      leftBias: nodeWidth / 2,
+      rightBias: nodeWidth / 2
+    };
+    spanMap.set(nodeId, fallback);
+    visited.delete(nodeId);
+    return fallback;
+  }
+
+  const s1Spans = node.children.s1.map(childId => computeSubtreeSpan(childId, tree, spanMap, visited, loopGroupMemberIds));
+  const s2Spans = node.children.s2.map(childId => computeSubtreeSpan(childId, tree, spanMap, visited, loopGroupMemberIds));
+
+  const s1Width = sumGroupWidth(s1Spans);
+  const s2Width = sumGroupWidth(s2Spans);
+
+  const leftBias = Math.max(nodeWidth / 2, s1Width);
+  const rightBias = Math.max(nodeWidth / 2, s2Width);
+
+  const span: SubtreeDimensions = {
+    width: leftBias + rightBias,
+    leftBias,
+    rightBias
+  };
+
+  spanMap.set(nodeId, span);
+
+  // Remove from visited set when done (backtrack)
+  visited.delete(nodeId);
+
+  return span;
+}
+
+function sumGroupWidth(spans: SubtreeDimensions[]): number {
+  if (spans.length === 0) return 0;
+  const total = spans.reduce((acc, span) => acc + span.width, 0);
+  const spacing = (spans.length - 1) * nodeCenterSpacing;
+  return total + spacing;
+}
+
+function computeBranchOffset(
+  nodeInfo: EquipmentLayoutInfo,
+  childLevels: number[],
+  metrics: LayoutMetrics
+): number {
+  if (childLevels.length === 0) return localBranchOffset;
+  const maxChildLevel = Math.max(...childLevels);
+  const depthSteps = Math.max(1, maxChildLevel - nodeInfo.level);
+  let offset = localBranchOffset + depthSteps * branchSpreadIncrement;
+
+  if (metrics.firstSplitLevel !== null) {
+    const relativeLevel = nodeInfo.level - metrics.firstSplitLevel;
+    if (relativeLevel >= 0) {
+      const baseHalfWidth = metrics.maxRowWidthPx * 0.4;
+      const widened = baseHalfWidth + relativeLevel * branchSpreadIncrement;
+      offset = Math.max(offset, widened);
+    }
+  }
+
+  return offset;
+}
+
+function computeGroupSlots(
+  parentCenterX: number,
+  childIds: string[],
+  spans: SubtreeDimensions[],
+  direction: -1 | 1,
+  hasOppositeBranch: boolean,
+  branchOffset: number
+): number[] {
+  if (childIds.length === 0) return [];
+
+  if (childIds.length === 1) {
+    if (!hasOppositeBranch) {
+      return [parentCenterX]; // Center single child when no opposite branch
+    }
+    const span = spans[0] || {
+      width: nodeWidth,
+      leftBias: nodeWidth / 2,
+      rightBias: nodeWidth / 2
+    };
+    const effectiveWidth = Math.min(span.width, nodeWidth + minimumNodeSpacing);
+    const branchCenter = parentCenterX + direction * (branchOffset + effectiveWidth / 2);
+    return [branchCenter];
+  }
+
+  const groupWidth = sumGroupWidth(spans);
+
+  let start: number;
+  if (!hasOppositeBranch) {
+    start = parentCenterX - groupWidth / 2;
+  } else {
+    if (direction === -1) {
+      start = parentCenterX - branchOffset - groupWidth;
+    } else {
+      start = parentCenterX + branchOffset;
+    }
+  }
+
+  const slots: number[] = [];
+  let cursor = start;
+
+  childIds.forEach((childId, index) => {
+    const span = spans[index];
+    slots.push(cursor + span.leftBias);
+    cursor += span.width;
+    if (index < childIds.length - 1) {
+      cursor += minimumNodeSpacing;
+    }
+  });
+
+  return slots;
+}
+
+function assignPositionsRecursive(
+  nodeId: string,
+  centerXPos: number,
+  tree: PlacementTree,
+  spanMap: Map<string, SubtreeDimensions>,
+  positions: Map<string, Position>,
+  baselines: Map<number, number>,
+  visited: Set<string>,
+  metrics: LayoutMetrics
+): void {
+  if (visited.has(nodeId)) return;
+  visited.add(nodeId);
+
+  const node = tree.nodes.get(nodeId);
+  if (!node) return;
+
+  const baselineY = baselines.get(node.info.level) ?? (centerY - node.info.level * levelSpacing);
+  positions.set(nodeId, { x: centerXPos, y: baselineY });
+
+  const hasS1 = node.children.s1.length > 0;
+  const hasS2 = node.children.s2.length > 0;
+
+  const s1Spans = node.children.s1.map(childId => spanMap.get(childId) || {
+    width: nodeWidth,
+    leftBias: nodeWidth / 2,
+    rightBias: nodeWidth / 2
+  });
+  const s2Spans = node.children.s2.map(childId => spanMap.get(childId) || {
+    width: nodeWidth,
+    leftBias: nodeWidth / 2,
+    rightBias: nodeWidth / 2
+  });
+
+  const s1Levels = node.children.s1.map(childId => tree.nodes.get(childId)?.info.level ?? node.info.level + 1);
+  const s2Levels = node.children.s2.map(childId => tree.nodes.get(childId)?.info.level ?? node.info.level + 1);
+
+  const s1BranchOffset = computeBranchOffset(node.info, s1Levels, metrics);
+  const s2BranchOffset = computeBranchOffset(node.info, s2Levels, metrics);
+
+  const s1Slots = computeGroupSlots(centerXPos, node.children.s1, s1Spans, -1, hasS2, s1BranchOffset);
+  const s2Slots = computeGroupSlots(centerXPos, node.children.s2, s2Spans, 1, hasS1, s2BranchOffset);
+
+  node.children.s1.forEach((childId, index) => {
+    assignPositionsRecursive(childId, s1Slots[index], tree, spanMap, positions, baselines, visited, metrics);
+  });
+
+  node.children.s2.forEach((childId, index) => {
+    assignPositionsRecursive(childId, s2Slots[index], tree, spanMap, positions, baselines, visited, metrics);
+  });
+}
+
+function normalizeLevelWidths(
+  positions: Map<string, Position>,
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>,
+  metrics: LayoutMetrics,
+  tree: PlacementTree
+): void {
+  console.log('🔧 NORMALIZE: Implementing proper S1/S2 branch ordering...');
+
+  // Group equipment by level (excluding laterals)
+  const levels = new Map<number, string[]>();
+
+  layoutInfoMap.forEach(info => {
+    if (info.isLateral) {
+      console.log(`    🔗 LATERAL SKIPPED: ${info.equipment.name} (${info.equipment.type})`);
+      return; // Skip laterals
+    }
+
+    // Skip loop groups - they should be positioned by their own algorithm
+    if (info.equipment.isLoopGroup) {
+      console.log(`    🔄 LOOP GROUP SKIPPED: ${info.equipment.name}`);
+      return;
+    }
+
+    const pos = positions.get(info.equipment.id);
+    if (!pos) return;
+    if (!levels.has(info.level)) {
+      levels.set(info.level, []);
+    }
+    levels.get(info.level)!.push(info.equipment.id);
+    console.log(`    ⚙️ INCLUDED: ${info.equipment.name} (${info.equipment.type}) at level ${info.level}`);
+  });
+
+  levels.forEach((ids, level) => {
+    if (ids.length === 0) return;
+
+    console.log(`🔧 Level ${level}: Processing ${ids.length} nodes for proper ordering`);
+
+    // Step 1: Group by parent branch (which MDS/parent they connect to)
+    const branchGroups = new Map<string, { s1: string[], s2: string[] }>();
+
+    ids.forEach(id => {
+      const info = layoutInfoMap.get(id);
+      if (!info) return;
+
+      // Find the parent ID (which branch/MDS this equipment connects to)
+      const parentId = info.parentId || 'unknown';
+      const branch = info.branch || 'S1';
+      const parentName = layoutInfoMap.get(parentId)?.equipment.name || parentId;
+
+      console.log(`    📊 ${info.equipment.name}: parent=${parentName}, branch=${branch}`);
+
+      if (!branchGroups.has(parentId)) {
+        branchGroups.set(parentId, { s1: [], s2: [] });
+      }
+
+      if (branch === 'S1') {
+        branchGroups.get(parentId)!.s1.push(id);
+      } else {
+        branchGroups.get(parentId)!.s2.push(id);
+      }
+    });
+
+    // Step 2: Sort branch groups by GRANDPARENT branch hierarchy, NOT parent or alphabetical
+    const sortedBranches = Array.from(branchGroups.entries()).sort(([parentA], [parentB]) => {
+      const parentInfoA = layoutInfoMap.get(parentA);
+      const parentInfoB = layoutInfoMap.get(parentB);
+      const nameA = parentInfoA?.equipment.name || parentA;
+      const nameB = parentInfoB?.equipment.name || parentB;
+
+      // Helper function to get branch path by tracing up hierarchy to find loop group (up to 6 levels)
+      const getBranchPath = (parentId: string): string => {
+        let currentId = parentId;
+        const tracePath: string[] = [];
+
+        // Trace up to 6 levels to find a loop group
+        for (let level = 0; level < 6; level++) {
+          const currentInfo = layoutInfoMap.get(currentId);
+          if (!currentInfo) break;
+
+          tracePath.push(currentInfo.equipment.name);
+
+          // If we found a loop group, use its branch designation
+          if (currentInfo.equipment.isLoopGroup) {
+            const loopBranch = currentInfo.branch || 'S1';
+            console.log(`    🧬 TRACE (${level + 1} levels): ${parentId} → ${tracePath.join(' → ')} = ${loopBranch}`);
+            return loopBranch;
+          }
+
+          // Move up to the next parent
+          if (!currentInfo.parentId) break;
+          currentId = currentInfo.parentId;
+        }
+
+        // If no loop group found, use the original parent's branch
+        const parentInfo = layoutInfoMap.get(parentId);
+        const fallbackBranch = parentInfo?.branch || 'S1';
+        console.log(`    🧬 TRACE (fallback): ${parentId} → ${tracePath.join(' → ')} = ${fallbackBranch} (no loop group found)`);
+        return fallbackBranch;
+      };
+
+      const branchPathA = getBranchPath(parentA);
+      const branchPathB = getBranchPath(parentB);
+
+      // Primary sort: Sort by grandparent loop group branch (S1 before S2)
+      if (branchPathA !== branchPathB) {
+        const result = branchPathA === 'S1' ? -1 : 1;
+        console.log(`  🔍 Grandparent branch sorting: "${nameA}" (path=${branchPathA}) vs "${nameB}" (path=${branchPathB}) = ${result}`);
+        return result;
+      }
+
+      // Secondary sort: within same grandparent branch, sort by direct parent branch
+      const directBranchA = parentInfoA?.branch || 'S1';
+      const directBranchB = parentInfoB?.branch || 'S1';
+      if (directBranchA !== directBranchB) {
+        const result = directBranchA === 'S1' ? -1 : 1;
+        console.log(`  🔍 Direct parent branch sorting: "${nameA}" (${directBranchA}) vs "${nameB}" (${directBranchB}) = ${result}`);
+        return result;
+      }
+
+      // Tertiary sort: if everything else is same, sort alphabetically
+      const result = nameA.localeCompare(nameB);
+      console.log(`  🔍 Name sorting: "${nameA}" vs "${nameB}" = ${result}`);
+      return result;
+    });
+
+    // Step 3: Build the final ordered list following the pattern:
+    // S1-branch-S1-nodes, S1-branch-S2-nodes, S2-branch-S1-nodes, S2-branch-S2-nodes
+    const orderedIds: string[] = [];
+
+    sortedBranches.forEach(([parentId, groups]) => {
+      const parentName = layoutInfoMap.get(parentId)?.equipment.name || parentId;
+      console.log(`  🌿 Branch ${parentName}: ${groups.s1.length} S1 nodes, ${groups.s2.length} S2 nodes`);
+
+      // Sort within each group by equipment name for consistency
+      const sortedS1 = groups.s1.sort((a, b) => {
+        const nameA = layoutInfoMap.get(a)?.equipment.name ?? '';
+        const nameB = layoutInfoMap.get(b)?.equipment.name ?? '';
+        return nameA.localeCompare(nameB);
+      });
+
+      const sortedS2 = groups.s2.sort((a, b) => {
+        const nameA = layoutInfoMap.get(a)?.equipment.name ?? '';
+        const nameB = layoutInfoMap.get(b)?.equipment.name ?? '';
+        return nameA.localeCompare(nameB);
+      });
+
+      // Add S1 nodes first, then S2 nodes for this branch
+      orderedIds.push(...sortedS1);
+      orderedIds.push(...sortedS2);
+    });
+
+    console.log(`  📐 Final ordering for level ${level}:`);
+    orderedIds.forEach((id, idx) => {
+      const info = layoutInfoMap.get(id);
+      const name = info?.equipment.name || id;
+      const branch = info?.branch || 'unknown';
+      const parentName = info?.parentId ? (layoutInfoMap.get(info.parentId)?.equipment.name || info.parentId) : 'none';
+      console.log(`    ${idx}: ${name} (${branch} from ${parentName})`);
+    });
+
+    // Step 4: Calculate positions with 200px gaps (380px center-to-center)
+    const spacing = 380; // 200px gap + 180px node width = 380px center-to-center
+    const totalWidth = (orderedIds.length - 1) * spacing;
+    const startX = centerX - (totalWidth / 2);
+
+    console.log(`  📏 Total width: ${totalWidth}px, Start X: ${startX}, Spacing: ${spacing}px`);
+
+    // Step 5: Position all equipment
+    orderedIds.forEach((id, idx) => {
+      const current = positions.get(id);
+      if (!current) return;
+
+      const newX = startX + (idx * spacing);
+      positions.set(id, { x: newX, y: current.y });
+
+      const info = layoutInfoMap.get(id);
+      const name = info?.equipment.name || id;
+      console.log(`    ✅ ${name}: x=${newX}, y=${current.y} (index ${idx})`);
+    });
+  });
+}
+
+function positionLateralEquipment(
+  tree: PlacementTree,
+  positions: Map<string, Position>,
+  baselines: Map<number, number>
+): void {
+  tree.nodes.forEach(node => {
+    if (node.children.laterals.length === 0) return;
+    const parentPos = positions.get(node.id);
+    if (!parentPos) return;
+
+    node.children.laterals.forEach(lateralId => {
+      const lateralNode = tree.nodes.get(lateralId);
+      if (!lateralNode) return;
+      const info = lateralNode.info;
+
+      // Enforce UPS-MDS pairing rule: 100px edge gap (≈280px center-to-center)
+      const isUps = info.equipment.type.toUpperCase().includes('UPS');
+      const y = parentPos.y; // Same Y as parent (MDS)
+
+      if (isUps) {
+        // Rule #2: UPS belongs on LEFT side of MDS with 100px edge gap
+        // 100px edge gap = 100px + (nodeWidth/2) + (nodeWidth/2) = 100px + 180px = 280px center-to-center
+        const upsX = parentPos.x - 280; // 100px edge gap from MDS
+        positions.set(lateralId, { x: upsX, y });
+      } else {
+        // Non-UPS lateral equipment uses original logic
+        const current = positions.get(lateralId);
+        if (current) {
+          positions.set(lateralId, { x: current.x, y });
+          return;
+        }
+        const direction = info.branch === 'S2' ? 1 : -1;
+        positions.set(lateralId, {
+          x: parentPos.x + direction * lateralUpsOffset,
+          y
+        });
+      }
+    });
+  });
+}
+
+function calculateUpstreamPositions(
+  selectedEquipment: ProcessedEquipment,
+  layoutInfo: EquipmentLayoutInfo[],
+  connectionMap: ConnectionMap
+): {
+  positions: Map<string, Position>;
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>;
+  baselines: Map<number, number>;
+  tree: PlacementTree;
+} {
+  console.log('🏗️ ===== LAYOUT PROCESS START =====');
+  console.log(`📊 Total equipment to layout: ${layoutInfo.length}`);
+
+  // Log equipment by level and type
+  const equipmentByLevel = new Map<number, EquipmentLayoutInfo[]>();
+  layoutInfo.forEach(info => {
+    const level = info.level;
+    if (!equipmentByLevel.has(level)) {
+      equipmentByLevel.set(level, []);
+    }
+    equipmentByLevel.get(level)!.push(info);
+  });
+
+  console.log('📋 Equipment breakdown by level:');
+  Array.from(equipmentByLevel.entries()).sort(([a], [b]) => a - b).forEach(([level, equipment]) => {
+    const utilities = equipment.filter(e => e.typeCategory === 'UTILITY');
+    const others = equipment.filter(e => e.typeCategory !== 'UTILITY');
+    console.log(`  Level ${level}: ${equipment.length} total (${utilities.length} utilities, ${others.length} others)`);
+    utilities.forEach(u => console.log(`    🔌 ${u.equipment.name} (${u.branch})`));
+    others.forEach(o => {
+      const parentInfo = o.parentId ? layoutInfo.find(p => p.equipment.id === o.parentId) : null;
+      const parentName = parentInfo?.equipment.name || 'none';
+      const parentLevel = parentInfo?.level ?? 'unknown';
+      console.log(`    ⚙️ ${o.equipment.name} (${o.branch}) [${o.typeCategory}] parent: ${parentName} (level ${parentLevel}) → level ${o.level}`);
+    });
+  });
+
+  const layoutInfoMap = new Map<string, EquipmentLayoutInfo>();
+  layoutInfo.forEach(info => layoutInfoMap.set(info.equipment.id, info));
+
+  if (!layoutInfoMap.has(selectedEquipment.id)) {
+    layoutInfoMap.set(selectedEquipment.id, {
+      equipment: selectedEquipment,
+      branch: 'S1',
+      typeCategory: categorizeByType(selectedEquipment.type || ''),
+      level: selectedEquipment.level ?? 0,
+      isLateral: false,
+      parentId: undefined
+    });
+  }
+
+  console.log('🌳 STEP 1: Building placement tree...');
+  const placementTree = buildPlacementTree(selectedEquipment, layoutInfoMap, connectionMap);
+
+  console.log('📏 STEP 2: Creating level baselines...');
+  const baselines = createLevelBaselines(layoutInfoMap.values(), selectedEquipment.level ?? 0);
+  Array.from(baselines.entries()).forEach(([level, y]) => {
+    console.log(`  Level ${level}: y=${y}`);
+  });
+
+  // Create set of loop group member IDs for width calculation optimization
+  const spanLoopGroupMemberIds = new Set<string>();
+  layoutInfo.forEach(info => {
+    if (info.equipment.isLoopGroup && info.equipment.loopGroupData?.equipment) {
+      info.equipment.loopGroupData.equipment.forEach(member => {
+        spanLoopGroupMemberIds.add(member.id);
+      });
+    }
+  });
+
+  console.log('📐 STEP 3: Computing subtree spans...');
+  const spanMap = new Map<string, SubtreeDimensions>();
+  const spanVisited = new Set<string>();
+  computeSubtreeSpan(placementTree.rootId, placementTree, spanMap, spanVisited, spanLoopGroupMemberIds);
+
+  console.log('🎯 STEP 4: Initial position assignment...');
+  const positions = new Map<string, Position>();
+  const visited = new Set<string>();
+  const layoutMetrics = computeLayoutMetrics(placementTree);
+
+  assignPositionsRecursive(
+    placementTree.rootId,
+    centerX,
+    placementTree,
+    spanMap,
+    positions,
+    baselines,
+    visited,
+    layoutMetrics
+  );
+
+  console.log('📍 After initial assignment, utility positions:');
+  Array.from(positions.entries()).forEach(([id, pos]) => {
+    const info = layoutInfoMap.get(id);
+    if (info?.typeCategory === 'UTILITY') {
+      console.log(`  ${info.equipment.name}: x=${Math.round(pos.x)}, y=${Math.round(pos.y)} (${info.branch})`);
+    }
+  });
+
+  console.log('🔧 STEP 5: Normalizing level widths...');
+  normalizeLevelWidths(positions, layoutInfoMap, layoutMetrics, placementTree);
+
+  console.log('📍 After normalization, utility positions:');
+  Array.from(positions.entries()).forEach(([id, pos]) => {
+    const info = layoutInfoMap.get(id);
+    if (info?.typeCategory === 'UTILITY') {
+      console.log(`  ${info.equipment.name}: x=${Math.round(pos.x)}, y=${Math.round(pos.y)} (${info.branch})`);
+    }
+  });
+
+  console.log('🔗 STEP 6: Positioning lateral equipment...');
+  positionLateralEquipment(placementTree, positions, baselines);
+
+  console.log('📍 After lateral positioning, utility positions:');
+  Array.from(positions.entries()).forEach(([id, pos]) => {
+    const info = layoutInfoMap.get(id);
+    if (info?.typeCategory === 'UTILITY') {
+      console.log(`  ${info.equipment.name}: x=${Math.round(pos.x)}, y=${Math.round(pos.y)} (${info.branch})`);
+    }
+  });
+
+  console.log('⚡ STEP 7: First collision detection...');
+  const anchorPositions = new Map(positions);
+  const resolvedPositions = detectAndResolveCollisions(positions, layoutInfoMap, anchorPositions);
+
+  console.log('📍 After first collision resolution, utility positions:');
+  Array.from(resolvedPositions.entries()).forEach(([id, pos]) => {
+    const info = layoutInfoMap.get(id);
+    if (info?.typeCategory === 'UTILITY') {
+      console.log(`  ${info.equipment.name}: x=${Math.round(pos.x)}, y=${Math.round(pos.y)} (${info.branch})`);
+    }
+  });
+
+  console.log('🔌 STEP 8: UPS-MDS pair tightening...');
+  applyUpsMdsPairTightening(resolvedPositions, layoutInfoMap, connectionMap, anchorPositions);
+
+  console.log('📍 After UPS-MDS tightening, utility positions:');
+  Array.from(resolvedPositions.entries()).forEach(([id, pos]) => {
+    const info = layoutInfoMap.get(id);
+    if (info?.typeCategory === 'UTILITY') {
+      console.log(`  ${info.equipment.name}: x=${Math.round(pos.x)}, y=${Math.round(pos.y)} (${info.branch})`);
+    }
+  });
+
+  console.log('⚡ STEP 9: Second collision detection...');
+  const finalPositions = detectAndResolveCollisions(resolvedPositions, layoutInfoMap, anchorPositions);
+
+  console.log('📍 After second collision resolution, utility positions:');
+  Array.from(finalPositions.entries()).forEach(([id, pos]) => {
+    const info = layoutInfoMap.get(id);
+    if (info?.typeCategory === 'UTILITY') {
+      console.log(`  ${info.equipment.name}: x=${Math.round(pos.x)}, y=${Math.round(pos.y)} (${info.branch})`);
+    }
+  });
+
+  console.log('🔗 STEP 10: Final lateral positioning...');
+  positionLateralEquipment(placementTree, finalPositions, baselines);
+
+  console.log('📏 STEP 11: Enforcing category baselines...');
+  // TEMPORARILY DISABLED: This is causing all utilities to collapse to same Y level
+  // enforceCategoryBaselines(finalPositions, layoutInfoMap, baselines);
+
+  console.log('📍 After baseline enforcement, utility positions:');
+  Array.from(finalPositions.entries()).forEach(([id, pos]) => {
+    const info = layoutInfoMap.get(id);
+    if (info?.typeCategory === 'UTILITY') {
+      console.log(`  ${info.equipment.name}: x=${Math.round(pos.x)}, y=${Math.round(pos.y)} (${info.branch})`);
+    }
+  });
+
+  console.log('🛠️ STEP 12: Final overlap prevention...');
+  ensureNoOverlaps(finalPositions);
+
+  console.log('🏁 FINAL UTILITY POSITIONS:');
+  Array.from(finalPositions.entries()).forEach(([id, pos]) => {
+    const info = layoutInfoMap.get(id);
+    if (info?.typeCategory === 'UTILITY') {
+      console.log(`  ✅ ${info.equipment.name}: x=${Math.round(pos.x)}, y=${Math.round(pos.y)} (${info.branch})`);
+    }
+  });
+
+  // Check for any remaining overlaps
+  const positionGroups = new Map<string, string[]>();
+  Array.from(finalPositions.entries()).forEach(([id, pos]) => {
+    const coord = `${Math.round(pos.x)},${Math.round(pos.y)}`;
+    if (!positionGroups.has(coord)) {
+      positionGroups.set(coord, []);
+    }
+    positionGroups.get(coord)!.push(id);
+  });
+
+  Array.from(positionGroups.entries()).forEach(([coord, ids]) => {
+    if (ids.length > 1) {
+      const names = ids.map(id => layoutInfoMap.get(id)?.equipment.name || id);
+      console.log(`❌ OVERLAP DETECTED at ${coord}: ${names.join(', ')}`);
+
+      // Log details about the overlapping equipment
+      ids.forEach(id => {
+        const info = layoutInfoMap.get(id);
+        const pos = finalPositions.get(id);
+        if (info && pos) {
+          console.log(`  📍 ${info.equipment.name}: Level ${info.level}, Branch ${info.branch}, Parent: ${info.parentId || 'none'}, Pos: (${pos.x}, ${pos.y})`);
+        }
+      });
+    }
+  });
+
+  console.log('🏗️ ===== LAYOUT PROCESS END =====');
+
+  return { positions: finalPositions, layoutInfoMap, baselines, tree: placementTree };
+}
+
+function ensureNoOverlaps(positions: Map<string, Position>): void {
+  // Final brute-force fix: ensure no two equipment have identical positions
+  const positionArray = Array.from(positions.entries());
+  const usedCoordinates = new Set<string>();
+
+  positionArray.forEach(([id, pos]) => {
+    const coord = `${Math.round(pos.x)},${Math.round(pos.y)}`;
+
+    if (usedCoordinates.has(coord)) {
+      // Move this equipment slightly to avoid overlap
+      let attempts = 0;
+      let newX = pos.x;
+
+      while (attempts < 10) {
+        newX += 50;
+        const newCoord = `${Math.round(newX)},${Math.round(pos.y)}`;
+        if (!usedCoordinates.has(newCoord)) {
+          positions.set(id, { x: newX, y: pos.y });
+          usedCoordinates.add(newCoord);
+          console.log(`OVERLAP FIX: Moved ${id} from ${pos.x} to ${newX}`);
+          return;
+        }
+        attempts++;
+      }
+    } else {
+      usedCoordinates.add(coord);
+    }
+  });
+}
+
+
+function detectAndResolveCollisions(
+  positions: Map<string, Position>,
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>,
+  anchorPositions?: Map<string, Position>
+): Map<string, Position> {
+  const resolved = new Map(positions);
+  const maxIterations = 10;
+
+  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    const collisions = findAllCollisions(resolved);
+    if (collisions.length === 0) {
+      if (anchorPositions) {
+        enforceBranchAnchors(resolved, layoutInfoMap, anchorPositions);
+      }
+      return resolved;
+    }
+    resolveCollisions(collisions, resolved, layoutInfoMap);
+    if (anchorPositions) {
+      enforceBranchAnchors(resolved, layoutInfoMap, anchorPositions);
+    }
+  }
+
+  if (anchorPositions) {
+    enforceBranchAnchors(resolved, layoutInfoMap, anchorPositions);
+  }
+
+  return resolved;
+}
+
+function applyUpsMdsPairTightening(
+  positions: Map<string, Position>,
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>,
+  connectionMap: ConnectionMap,
+  anchorPositions?: Map<string, Position>
+): void {
+  layoutInfoMap.forEach(info => {
+    const equipmentType = info.equipment.type?.toUpperCase() ?? '';
+    if (!equipmentType.includes('UPS')) return;
+
+    const upsId = info.equipment.id;
+    const upsPosition = positions.get(upsId);
+    if (!upsPosition) return;
+
+    const relationEntry = connectionMap.get(upsId);
+    if (!relationEntry) return;
+
+    const mdsParent = relationEntry.upstream.find(parent =>
+      (parent.type?.toUpperCase() ?? '').includes('MDS')
+    );
+
+    if (!mdsParent) return;
+
+    const mdsPosition = positions.get(mdsParent.id);
+    if (!mdsPosition) return;
+
+    const desiredX = mdsPosition.x - upsMdsPairOffset;
+    const desiredY = mdsPosition.y;
+    const currentDistance = Math.abs(mdsPosition.x - upsPosition.x);
+    const alreadyLeft = upsPosition.x < mdsPosition.x;
+    const withinTolerance = Math.abs(currentDistance - upsMdsPairOffset) <= 6 || Math.abs(currentDistance - nodeCenterSpacing) <= 6;
+
+    if (alreadyLeft && withinTolerance) {
+      if (Math.abs(upsPosition.y - desiredY) > 1) {
+        positions.set(upsId, { x: upsPosition.x, y: desiredY });
+        if (anchorPositions) {
+          anchorPositions.set(upsId, { x: upsPosition.x, y: desiredY });
+        }
+      }
+      return;
+    }
+
+    const snappedX = Math.abs(upsPosition.x - mdsPosition.x) > nodeCenterSpacing
+      ? mdsPosition.x - nodeCenterSpacing
+      : desiredX;
+
+    const snapped = { x: snappedX, y: desiredY };
+    positions.set(upsId, snapped);
+    if (anchorPositions) {
+      anchorPositions.set(upsId, snapped);
+    }
+  });
+}
+
+function findAllCollisions(positions: Map<string, Position>): CollisionInfo[] {
+  const collisions: CollisionInfo[] = [];
+  const positionArray = Array.from(positions.entries());
+
+  for (let i = 0; i < positionArray.length; i++) {
+    for (let j = i + 1; j < positionArray.length; j++) {
+      const [id1, pos1] = positionArray[i];
+      const [id2, pos2] = positionArray[j];
+
+      const collision = checkCollision(pos1, pos2);
+      if (collision) {
+        collisions.push({
+          node1: id1,
+          node2: id2,
+          overlap: collision
+        });
+      }
+    }
+  }
+
+  return collisions;
+}
+
+function checkCollision(pos1: Position, pos2: Position): { horizontal: number; vertical: number } | null {
+  const horizontalDistance = Math.abs(pos1.x - pos2.x);
+  const verticalDistance = Math.abs(pos1.y - pos2.y);
+
+  const minHorizontalDistance = nodeWidth + minimumNodeSpacing;
+  const minVerticalDistance = nodeHeight + 50;
+
+  const horizontalOverlap = minHorizontalDistance - horizontalDistance;
+  const verticalOverlap = minVerticalDistance - verticalDistance;
+
+  // Only consider it a collision if horizontal overlap exists
+  // Equipment on the same Y level (same tier) should be allowed
+  if (horizontalOverlap > 0) {
+    // For equipment at exactly the same Y coordinate, we only care about horizontal separation
+    if (Math.abs(pos1.y - pos2.y) < 10) {
+      return { horizontal: horizontalOverlap, vertical: 0 };
+    }
+    // For equipment at different Y levels, check both horizontal and vertical overlap
+    if (verticalOverlap > 0) {
+      return { horizontal: horizontalOverlap, vertical: verticalOverlap };
+    }
+  }
+
+  return null;
+}
+
+function resolveCollisions(
+  collisions: CollisionInfo[],
+  positions: Map<string, Position>,
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>
+): void {
+  collisions.sort((a, b) =>
+    (b.overlap.horizontal + b.overlap.vertical) - (a.overlap.horizontal + a.overlap.vertical)
+  );
+
+
+  collisions.forEach(collision => {
+    const pos1 = positions.get(collision.node1);
+    const pos2 = positions.get(collision.node2);
+    if (!pos1 || !pos2) return;
+
+    const info1 = layoutInfoMap.get(collision.node1);
+    const info2 = layoutInfoMap.get(collision.node2);
+
+    const canSplitResolution =
+      info1 && info2 &&
+      info1.level === info2.level &&
+      info1.branch && info2.branch &&
+      info1.branch !== info2.branch &&
+      !info1.isLateral && !info2.isLateral;
+
+    if (canSplitResolution) {
+      const shift = (collision.overlap.horizontal + collisionPadding) / 2;
+      const leftNode = info1.branch === 'S1' ? collision.node1 : collision.node2;
+      const rightNode = leftNode === collision.node1 ? collision.node2 : collision.node1;
+
+      const leftPos = leftNode === collision.node1 ? pos1 : pos2;
+      const rightPos = rightNode === collision.node1 ? pos1 : pos2;
+
+      positions.set(leftNode, { x: leftPos.x - shift, y: leftPos.y });
+      positions.set(rightNode, { x: rightPos.x + shift, y: rightPos.y });
+      return;
+    }
+
+    const moveFirst = decideMoveOrder(collision.node1, collision.node2, layoutInfoMap);
+    const moverId = moveFirst ? collision.node1 : collision.node2;
+    const moverPos = moveFirst ? pos1 : pos2;
+    const otherPos = moveFirst ? pos2 : pos1;
+
+    const updated = calculateSafePosition(
+      moverId,
+      moverPos,
+      otherPos,
+      collision.overlap,
+      layoutInfoMap
+    );
+
+    positions.set(moverId, updated);
+  });
+}
+
+function enforceBranchAnchors(
+  positions: Map<string, Position>,
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>,
+  anchorPositions: Map<string, Position>
+): void {
+  anchorPositions.forEach((anchorPos, id) => {
+    const current = positions.get(id);
+    if (!current) return;
+
+    const info = layoutInfoMap.get(id);
+    if (!info) return;
+
+    const isUps = isUPSEquipment(info.equipment.type, info.equipment.name);
+    const branch = info.branch;
+
+    let leftSlack = minimumNodeSpacing / 2;
+    let rightSlack = minimumNodeSpacing / 2;
+
+    if (info.isLateral && isUps) {
+      leftSlack = minimumNodeSpacing / 3;
+      rightSlack = Math.min(12, minimumNodeSpacing / 10);
+    } else if (branch === 'S1') {
+      leftSlack = minimumNodeSpacing * 0.8;
+      rightSlack = minimumNodeSpacing * 0.2;
+    } else if (branch === 'S2') {
+      leftSlack = minimumNodeSpacing * 0.2;
+      rightSlack = minimumNodeSpacing * 0.8;
+    }
+
+    const minX = anchorPos.x - leftSlack;
+    const maxX = anchorPos.x + rightSlack;
+    const clampedX = Math.min(Math.max(current.x, minX), maxX);
+
+    if (clampedX !== current.x) {
+      positions.set(id, { x: clampedX, y: current.y });
+    }
+  });
+}
+
+function enforceCategoryBaselines(
+  positions: Map<string, Position>,
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>,
+  baselines: Map<number, number>
+): void {
+  const categoryBaselines = new Map<string, number>();
+
+  layoutInfoMap.forEach(info => {
+    const id = info.equipment.id;
+    const pos = positions.get(id);
+    if (!pos) return;
+
+    const key = getTypeAlignmentKey(info, layoutInfoMap);
+
+    if (!categoryBaselines.has(key)) {
+      categoryBaselines.set(key, determineBaselineTarget(info, positions, baselines, layoutInfoMap));
+    }
+
+    const targetY = categoryBaselines.get(key)!;
+    if (Math.abs(pos.y - targetY) > 0.5) {
+      positions.set(id, { x: pos.x, y: targetY });
+    }
+  });
+}
+
+function extractTypePrefix(type: string | undefined): string {
+  if (!type) return '';
+  return type.split(':')[0].trim().toUpperCase();
+}
+
+function getTypeAlignmentKey(
+  info: EquipmentLayoutInfo,
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>
+): string {
+  const equipment = info.equipment;
+  if (equipment.isLoopGroup) {
+    return 'RING_BUS';
+  }
+
+  const prefix = extractTypePrefix(equipment.type);
+
+  const category = categorizeByType(equipment.type || '');
+  if (category !== 'END_EQUIPMENT') {
+    if (category === 'DISTRIBUTION') {
+      if (prefix.includes('UPS') && info.parentId) {
+        const parentInfo = layoutInfoMap.get(info.parentId);
+        if (parentInfo) {
+          const parentPrefix = extractTypePrefix(parentInfo.equipment.type);
+          if (parentPrefix.includes('MDS') || parentPrefix.includes('SWGR') || parentPrefix.includes('SWITCHGEAR')) {
+            return `UPS_WITH_${parentPrefix}`;
+          }
+        }
+        return 'UPS';
+      }
+      if (prefix.includes('MDS')) {
+        return 'MDS';
+      }
+      if (prefix.includes('SWGR')) {
+        return 'SWGR';
+      }
+      return 'DISTRIBUTION';
+    }
+    if (category === 'GENERATOR') {
+      return 'GEN';
+    }
+    if (category === 'TRANSFORMER') {
+      return 'TX';
+    }
+    if (category === 'UTILITY') {
+      return 'UTILITY';
+    }
+    return category;
+  }
+
+  if (prefix.includes('UPS') && info.parentId) {
+    const parentInfo = layoutInfoMap.get(info.parentId);
+    if (parentInfo) {
+      const parentPrefix = extractTypePrefix(parentInfo.equipment.type);
+      if (parentPrefix.includes('MDS') || parentPrefix.includes('SWGR') || parentPrefix.includes('SWITCHGEAR')) {
+        return `UPS_WITH_${parentPrefix}`;
+      }
+    }
+    return 'UPS';
+  }
+
+  if (prefix) {
+    if (categoryVerticalOffsets[prefix] !== undefined) {
+      return prefix;
+    }
+  }
+
+  return category;
+}
+
+function determineBaselineTarget(
+  info: EquipmentLayoutInfo,
+  positions: Map<string, Position>,
+  baselines: Map<number, number>,
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>
+): number {
+  const typePrefix = extractTypePrefix(info.equipment.type);
+
+  const key = getTypeAlignmentKey(info, layoutInfoMap);
+  if (categoryVerticalOffsets[key] !== undefined) {
+    return centerY + categoryVerticalOffsets[key] * categoryVerticalSpacing;
+  }
+
+  if (typePrefix.includes('UPS') && info.parentId) {
+    const parentPos = positions.get(info.parentId);
+    if (parentPos) {
+      return parentPos.y;
+    }
+    const parentInfo = layoutInfoMap.get(info.parentId);
+    if (parentInfo) {
+      const baseline = baselines.get(parentInfo.level);
+      if (baseline !== undefined) {
+        return baseline;
+      }
+    }
+  }
+
+  const baseline = baselines.get(info.level);
+  if (baseline !== undefined) {
+    return baseline;
+  }
+
+  const pos = positions.get(info.equipment.id);
+  return pos ? pos.y : centerY;
+}
+
+function decideMoveOrder(
+  id1: string,
+  id2: string,
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>
+): boolean {
+  const info1 = layoutInfoMap.get(id1);
+  const info2 = layoutInfoMap.get(id2);
+
+  if (!info1 || !info2) return true;
+
+  const node1IsUps = isUPSEquipment(info1.equipment.type, info1.equipment.name);
+  const node2IsUps = isUPSEquipment(info2.equipment.type, info2.equipment.name);
+
+  if (node1IsUps && !node2IsUps) {
+    return false; // Keep UPS anchored; move the non-UPS node instead
+  }
+  if (!node1IsUps && node2IsUps) {
+    return true;
+  }
+
+  const isRoot1 = info1.level === 0;
+  const isRoot2 = info2.level === 0;
+  if (isRoot1 && !isRoot2) return false;
+  if (!isRoot1 && isRoot2) return true;
+
+  if (info1.isLateral !== info2.isLateral) {
+    return info1.isLateral;
+  }
+
+  if (info1.level !== info2.level) {
+    return info1.level > info2.level;
+  }
+
+  if (info1.branch !== info2.branch) {
+    return info1.branch === 'S2';
+  }
+
+  return id1.localeCompare(id2) > 0;
+}
+
+function calculateSafePosition(
+  nodeId: string,
+  nodePos: Position,
+  collisionPos: Position,
+  overlap: { horizontal: number; vertical: number },
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>
+): Position {
+  const info = layoutInfoMap.get(nodeId);
+  if (info && info.level === 0) {
+    return nodePos;
+  }
+
+  const deltaX = overlap.horizontal + collisionPadding;
+  let moveRight: boolean;
+
+  if (info?.isLateral && info.lateralInfo) {
+    moveRight = info.lateralInfo.direction === 'right';
+  } else if (info?.branch === 'S2') {
+    moveRight = true;
+  } else if (info?.branch === 'S1') {
+    moveRight = false;
+  } else {
+    moveRight = nodePos.x > collisionPos.x;
+  }
+
+  return {
+    x: nodePos.x + (moveRight ? deltaX : -deltaX),
+    y: nodePos.y
+  };
+}
+
+function validateUpstreamLayout(
+  _tree: PlacementTree,
+  positions: Map<string, Position>,
+  baselines: Map<number, number>,
+  layoutInfoMap: Map<string, EquipmentLayoutInfo>
+): LayoutValidationResult {
+  const issues: string[] = [];
+  const baselineTolerance = 0.5;
+
+  layoutInfoMap.forEach(info => {
+    const pos = positions.get(info.equipment.id);
+    const baseline = baselines.get(info.level);
+    if (!pos || baseline === undefined) {
+      return;
+    }
+    if (Math.abs(pos.y - baseline) > baselineTolerance) {
+      issues.push(
+        `Baseline drift detected for ${info.equipment.name} (${info.equipment.id}): expected ${baseline}, got ${pos.y}`
+      );
+    }
+  });
+
+  const collisions = findAllCollisions(positions);
+  if (collisions.length > 0) {
+    issues.push(`${collisions.length} collisions detected after resolution`);
+  }
+
+  return {
+    isValid: issues.length === 0,
+    issues,
+    totalNodes: positions.size,
+    validationTimestamp: new Date().toISOString()
+  };
 }
 
 function generateNodesAndEdges(
@@ -630,6 +2143,8 @@ function generateNodesAndEdges(
     id: selectedEquipment.id,
     data: {
       label: `${selectedEquipment.name}\n${selectedEquipment.type}`,
+      name: selectedEquipment.name,
+      type: selectedEquipment.type,
       equipment: selectedEquipment
     },
     type: 'powerNode',
@@ -652,186 +2167,273 @@ function generateNodesAndEdges(
     }
   });
 
-  // Group upstream equipment by level
-  const upstreamByLevel = new Map<number, ProcessedEquipment[]>();
-  upstream.forEach(eq => {
-    if (!upstreamByLevel.has(eq.level)) {
-      upstreamByLevel.set(eq.level, []);
+  // NEW: Natural branching tree layout using enhanced algorithm
+  console.log('Using span-based upstream layout algorithm');
+
+  // Classify upstream equipment for enhanced layout
+  const upstreamLayoutInfo = classifyEquipmentForLayout(upstream, connectionMap);
+
+  // Calculate optimal positions using span-based natural branching
+  const {
+    positions: upstreamPositions,
+    layoutInfoMap: upstreamLayoutInfoMap,
+    baselines: upstreamBaselines,
+    tree: upstreamPlacementTree
+  } = calculateUpstreamPositions(selectedEquipment, upstreamLayoutInfo, connectionMap);
+
+  const validationResult = validateUpstreamLayout(
+    upstreamPlacementTree,
+    upstreamPositions,
+    upstreamBaselines,
+    upstreamLayoutInfoMap
+  );
+
+  if (!validationResult.isValid) {
+    console.warn('Upstream layout validation issues:', validationResult.issues);
+  }
+
+  // Create lateral UPS map for edge generation compatibility
+  const lateralUpsMap = new Map<string, { parentId: string; direction: 'left' | 'right'; offset: number }>();
+  upstreamLayoutInfo.forEach(info => {
+    if (info.isLateral && info.lateralInfo) {
+      lateralUpsMap.set(info.equipment.id, info.lateralInfo);
     }
-    upstreamByLevel.get(eq.level)!.push(eq);
   });
 
-  // Position upstream equipment
-  let s1ColumnAnchor: number | null = null;
-  let s2ColumnAnchor: number | null = null;
-  let s1RightBarrier: number | null = null;
+  // Create set of loop group member IDs for rendering filtering
+  const loopGroupMemberIds = new Set<string>();
+  upstream.forEach(eq => {
+    if (eq.isLoopGroup && eq.loopGroupData?.equipment) {
+      eq.loopGroupData.equipment.forEach(member => {
+        loopGroupMemberIds.add(member.id);
+      });
+    }
+  });
 
-  upstreamByLevel.forEach((levelEquipment, level) => {
-    const y = centerY - (level * levelSpacing);
-    const s1Group = levelEquipment
-      .filter(eq => getEquipmentBranch(eq.id) === 'S1')
-      .sort((a, b) => a.name.localeCompare(b.name));
-    const s2Group = levelEquipment
-      .filter(eq => getEquipmentBranch(eq.id) === 'S2')
-      .sort((a, b) => a.name.localeCompare(b.name));
-    const horizontalGap = nodeSpacing * 2;
+  // Add upstream nodes and edges based on computed positions
+  upstream.forEach(eq => {
+    // Skip individual equipment that are part of a loop group (they'll be represented by the loop group node)
+    if (!eq.isLoopGroup && loopGroupMemberIds.has(eq.id)) {
+      return;
+    }
 
-    const s1Width = s1Group.length
-      ? s1Group.length * nodeWidth + Math.max(0, s1Group.length - 1) * nodeSpacing
-      : 0;
-    const s2Width = s2Group.length
-      ? s2Group.length * nodeWidth + Math.max(0, s2Group.length - 1) * nodeSpacing
-      : 0;
+    let pos = upstreamPositions.get(eq.id);
 
-    const renderEquipment = (eq: ProcessedEquipment, x: number) => {
-      const branch = getEquipmentBranch(eq.id);
-      const color = getNodeColor(branch);
+    // If loop group doesn't have a position, calculate proper baseline position
+    if (!pos && eq.isLoopGroup && eq.loopGroupData?.equipment) {
+      const firstMember = eq.loopGroupData.equipment[0];
+      const firstMemberPos = firstMember ? upstreamPositions.get(firstMember.id) : null;
 
-      const labelText = eq.isLoopGroup
-        ? `${eq.name}\n${eq.type}\nRING BUS`
-        : `${eq.name}\n${eq.type}`;
+      if (firstMemberPos) {
+        // Use first member's X coordinate but calculate proper baseline Y based on loop group's level
+        const baselineY = upstreamBaselines.get(eq.level) ?? (300 - eq.level * 280); // 300 = centerY, 280 = levelSpacing
+        pos = {
+          x: firstMemberPos.x,
+          y: baselineY
+        };
+        console.log(`Loop group ${eq.id} positioned at correct baseline: level ${eq.level} -> Y ${baselineY} (was ${firstMemberPos.y})`);
+      }
+    }
 
-      nodes.push({
-        id: eq.id,
-        data: {
-          label: labelText,
-          equipment: eq
-        },
-        type: 'powerNode',
-        position: { x, y },
-        style: {
-          background: color,
-          border: eq.isLoopGroup ? '3px dashed #cbd5e1' : 'none',
-          borderRadius: '8px',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-          width: eq.isLoopGroup ? nodeWidth + 20 : nodeWidth,
-          height: nodeHeight,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: 'white',
-          fontSize: '11px',
-          fontWeight: 600,
-          textAlign: 'center',
-          whiteSpace: 'pre-line'
-        }
+    if (!pos) return;
+
+    // Apply type-based alignment for equipment connected through loop groups
+    let { x, y } = pos;
+
+    // Check if this equipment has a loop group in its path (anywhere in parent chain)
+    // Check both direct loop group IDs and if any path equipment is part of a loop group
+    const hasLoopGroupInPath = eq.path && eq.path.some(pathId => {
+      // Check if pathId is directly a loop group
+      const isDirectLoopGroup = upstream.some(parent => parent.id === pathId && parent.isLoopGroup);
+      // Check if pathId is an equipment that's part of a loop group
+      const isPartOfLoopGroup = loopGroupMemberIds.has(pathId);
+      return isDirectLoopGroup || isPartOfLoopGroup;
+    });
+
+    const hasLoopGroupParent = eq.parentId && (
+      upstream.some(parent => parent.id === eq.parentId && parent.isLoopGroup) ||
+      loopGroupMemberIds.has(eq.parentId)
+    );
+
+    if (hasLoopGroupInPath || hasLoopGroupParent) {
+      // This equipment is connected through a loop group, align by type instead of level
+      const equipmentTypePart = eq.type.split(':')[0].trim(); // Extract type prefix (e.g., "MDS" from "MDS: Main Distribution...")
+
+      // Find corresponding equipment of same type NOT connected through loop groups for reference alignment
+      const referenceEquipment = upstream.find(ref => {
+        if (ref.isLoopGroup || ref.id === eq.id) return false;
+        if (ref.type.split(':')[0].trim() !== equipmentTypePart) return false;
+
+        // Check if reference equipment has loop group in path
+        const refHasLoopGroupInPath = ref.path && ref.path.some(pathId => {
+          const isDirectLoopGroup = upstream.some(parent => parent.id === pathId && parent.isLoopGroup);
+          const isPartOfLoopGroup = loopGroupMemberIds.has(pathId);
+          return isDirectLoopGroup || isPartOfLoopGroup;
+        });
+
+        const refHasLoopGroupParent = ref.parentId && (
+          upstream.some(parent => parent.id === ref.parentId && parent.isLoopGroup) ||
+          loopGroupMemberIds.has(ref.parentId)
+        );
+
+        // Only use as reference if it's NOT connected through loop groups
+        return !refHasLoopGroupInPath && !refHasLoopGroupParent;
       });
 
-      // Add edge to parent
-      if (eq.parentId) {
+      if (referenceEquipment) {
+        const referencePos = upstreamPositions.get(referenceEquipment.id);
+        if (referencePos) {
+          y = referencePos.y; // Use same Y coordinate as reference equipment
+          console.log(`Type-based alignment: ${eq.name} (${equipmentTypePart}) aligned to Y ${y} (reference: ${referenceEquipment.name})`);
+        }
+      } else {
+        console.log(`No reference equipment found for type-based alignment of ${eq.name} (${equipmentTypePart})`);
+      }
+    }
+
+    const branch = getEquipmentBranch(eq.id);
+    const color = getNodeColor(branch);
+
+    const labelText = eq.isLoopGroup
+      ? `${eq.name}\n${eq.type}`
+      : `${eq.name}\n${eq.type}`;
+
+    nodes.push({
+      id: eq.id,
+      data: {
+        label: labelText,
+        name: eq.name,
+        type: eq.type,
+        equipment: eq
+      },
+      type: 'powerNode',
+      position: { x, y },
+      style: {
+        background: color,
+        border: eq.isLoopGroup ? '3px dashed #cbd5e1' : 'none',
+        borderRadius: '8px',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+        width: eq.isLoopGroup ? nodeWidth + 20 : nodeWidth,
+        height: nodeHeight,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: 'white',
+        fontSize: '11px',
+        fontWeight: 600,
+        textAlign: 'center',
+        whiteSpace: 'pre-line'
+      }
+    });
+
+    const lateralInfo = lateralUpsMap.get(eq.id);
+
+    if (eq.parentId) {
+      const connSource = getUpstreamEdgeSourceNumber(eq.parentId, eq.id);
+      const sourceHandle = lateralInfo
+        ? (lateralInfo.direction === 'right' ? 'sr' : 'sl')
+        : 'ts';
+      const targetHandle = lateralInfo
+        ? (lateralInfo.direction === 'right' ? 'sl' : 'sr')
+        : 'bt';
+      edges.push({
+        id: `${eq.parentId}-${eq.id}`,
+        source: eq.parentId,
+        target: eq.id,
+        type: 'smoothstep',
+        sourceHandle,
+        targetHandle,
+        label: connSource === 'S2' || connSource === 'S1' ? connSource : undefined,
+        labelShowBg: true,
+        labelBgStyle: { fill: '#ffffff', fillOpacity: 0.9, stroke: '#e5e7eb' },
+        labelBgPadding: [4, 2],
+        labelBgBorderRadius: 6,
+        labelStyle: { fill: '#0f172a', fontWeight: 600, fontSize: 11 },
+        style: {
+          stroke: connSource === 'S2' ? '#2b81e5' : '#1259ad',
+          strokeWidth: 2,
+          strokeDasharray: connSource === 'S2' ? '6 4' : undefined
+        },
+        data: {
+          sourceNumber: connSource,
+          isLoop: eq.isLoopGroup
+        }
+      });
+    }
+
+    if (lateralInfo) {
+      const parentId = lateralInfo.parentId;
+      const returnEdgeId = `lateral-return-${eq.id}-${parentId}`;
+      const exists = edges.some(e => e.id === returnEdgeId);
+      if (!exists) {
         edges.push({
-          id: `${eq.parentId}-${eq.id}`,
-          source: eq.parentId,
-          target: eq.id,
+          id: returnEdgeId,
+          source: eq.id,
+          target: parentId,
           type: 'smoothstep',
           sourceHandle: 'ts',
-          targetHandle: 'bt',
+          targetHandle: lateralInfo.direction === 'right' ? 'sr' : 'sl',
           style: {
-            stroke: color,
+            stroke: '#1259ad',
             strokeWidth: 2
           },
           data: {
-            sourceNumber: 'downstream'
+            sourceNumber: 'loop',
+            isLoop: true
           }
         });
       }
+    }
 
-      if (eq.alternateParents && eq.alternateParents.length > 0) {
-        eq.alternateParents.forEach((altParent, altIndex) => {
-          const parentInTree = [...upstream, ...downstream].some(e => e.id === altParent.id) || altParent.id === selectedEquipment.id;
+    if (eq.alternateParents && eq.alternateParents.length > 0) {
+      eq.alternateParents.forEach((altParent, altIndex) => {
+        const parentInTree = upstream.some(e => e.id === altParent.id) || altParent.id === selectedEquipment.id;
 
-          if (parentInTree) {
-            const isBypass = altParent.connectionType === 'bypass';
-            const edgeId = `bypass-${altParent.id}-${eq.id}-${altParent.connectionType}-${altIndex}`;
+        if (parentInTree) {
+          const isBypass = altParent.connectionType === 'bypass';
+          const edgeId = `bypass-${altParent.id}-${eq.id}-${altParent.connectionType}-${altIndex}`;
 
-            const existingEdge = edges.find(e =>
-              (e.source === altParent.id && e.target === eq.id) ||
-              (e.source === eq.id && e.target === altParent.id)
-            );
+          const existingEdge = edges.find(e =>
+            (e.source === altParent.id && e.target === eq.id) ||
+            (e.source === eq.id && e.target === altParent.id)
+          );
 
-            if (!existingEdge) {
-              edges.push({
-                id: edgeId,
-                source: altParent.id,
-                target: eq.id,
-                type: 'smoothstep',
-                sourceHandle: 'b',
-                targetHandle: 't',
-                label: isBypass ? 'BYPASS' : altParent.sourceNumber,
-                labelShowBg: true,
-                labelBgStyle: {
-                  fill: isBypass ? '#fef3c7' : '#ffffff',
-                  fillOpacity: 0.9,
-                  stroke: isBypass ? '#f59e0b' : '#e5e7eb'
-                },
-                labelBgPadding: [4, 2],
-                labelBgBorderRadius: 6,
-                labelStyle: { fill: isBypass ? '#92400e' : '#0f172a', fontWeight: 600, fontSize: 10 },
-                style: {
-                  stroke: isBypass ? '#f59e0b' : (altParent.sourceNumber === 'S2' ? '#2b81e5' : '#1259ad'),
-                  strokeWidth: isBypass ? 3 : 2,
-                  strokeDasharray: isBypass ? '8 4' : (altParent.sourceNumber === 'S2' ? '6 4' : undefined),
-                  opacity: isBypass ? 0.8 : 0.6
-                },
-                data: {
-                  sourceNumber: altParent.sourceNumber,
-                  connectionType: altParent.connectionType,
-                  isAlternate: true
-                }
-              });
-            }
+          if (!existingEdge) {
+            const isRedundant = !isBypass && (altParent.sourceNumber === 'S2' || altParent.sourceNumber === 'S1');
+            const sourceHandle = isBypass ? 'b' : (isRedundant ? 'ts' : 'b');
+            const targetHandle = isBypass ? 't' : (isRedundant ? 'bt' : 't');
+            edges.push({
+              id: edgeId,
+              source: altParent.id,
+              target: eq.id,
+              type: 'smoothstep',
+              sourceHandle,
+              targetHandle,
+              label: isBypass ? 'BYPASS' : altParent.sourceNumber,
+              labelShowBg: true,
+              labelBgStyle: {
+                fill: isBypass ? '#fef3c7' : '#ffffff',
+                fillOpacity: 0.9,
+                stroke: isBypass ? '#f59e0b' : '#e5e7eb'
+              },
+              labelBgPadding: [4, 2],
+              labelBgBorderRadius: 6,
+              labelStyle: { fill: isBypass ? '#92400e' : '#0f172a', fontWeight: 600, fontSize: 10 },
+              style: {
+                stroke: isBypass ? '#f59e0b' : (altParent.sourceNumber === 'S2' ? '#2b81e5' : '#1259ad'),
+                strokeWidth: isBypass ? 3 : 2,
+                strokeDasharray: isBypass ? '8 4' : (altParent.sourceNumber === 'S2' ? '6 4' : undefined),
+                opacity: isBypass ? 0.8 : 0.6
+              },
+              data: {
+                sourceNumber: altParent.sourceNumber,
+                connectionType: altParent.connectionType,
+                isAlternate: true
+              }
+            });
           }
-        });
-      }
-    };
-
-    const positionGroup = (group: ProcessedEquipment[], startX: number) => {
-      group.forEach((eq, index) => {
-        const x = startX + index * (nodeWidth + nodeSpacing);
-        renderEquipment(eq, x);
+        }
       });
-    };
-
-    if (s1Group.length && s2Group.length) {
-      const defaultLeft = centerX - horizontalGap / 2 - s1Width;
-      const leftStartX = s1ColumnAnchor !== null ? s1ColumnAnchor : defaultLeft;
-
-      const currentRightBarrier = leftStartX + s1Width;
-      s1RightBarrier = Math.max(s1RightBarrier ?? currentRightBarrier, currentRightBarrier);
-
-      const defaultRight = centerX + horizontalGap / 2;
-      let rightStartX = s2ColumnAnchor !== null ? s2ColumnAnchor : defaultRight;
-      const minimumRight = (s1RightBarrier ?? currentRightBarrier) + horizontalGap;
-      if (rightStartX < minimumRight) {
-        rightStartX = minimumRight;
-      }
-
-      positionGroup(s1Group, leftStartX);
-      positionGroup(s2Group, rightStartX);
-
-      s1ColumnAnchor = leftStartX;
-      s2ColumnAnchor = rightStartX;
-    } else if (s1Group.length) {
-      const startX = s1ColumnAnchor !== null
-        ? s1ColumnAnchor
-        : centerX - s1Width / 2;
-
-      positionGroup(s1Group, startX);
-      s1ColumnAnchor = startX;
-      const rightEdge = startX + s1Width;
-      s1RightBarrier = Math.max(s1RightBarrier ?? rightEdge, rightEdge);
-    } else if (s2Group.length) {
-      let startX: number;
-      if (s2ColumnAnchor !== null) {
-        startX = s2ColumnAnchor;
-      } else if (s1RightBarrier !== null) {
-        startX = s1RightBarrier + horizontalGap;
-      } else {
-        startX = centerX - s2Width / 2;
-      }
-
-      positionGroup(s2Group, startX);
-      s2ColumnAnchor = startX;
     }
   });
 
@@ -847,17 +2449,19 @@ function generateNodesAndEdges(
   // Position downstream equipment
   downstreamByLevel.forEach((levelEquipment, level) => {
     const y = centerY + (level * levelSpacing);
-    const totalWidth = levelEquipment.length * nodeWidth + (levelEquipment.length - 1) * nodeSpacing;
+    const totalWidth = levelEquipment.length * nodeWidth + (levelEquipment.length - 1) * minimumNodeSpacing;
     const startX = centerX - totalWidth / 2;
 
     levelEquipment.forEach((eq, index) => {
-      const x = startX + index * (nodeWidth + nodeSpacing);
+      const x = startX + index * (nodeWidth + minimumNodeSpacing);
       const color = '#e77b16'; // downstream orange
 
       nodes.push({
         id: eq.id,
         data: {
           label: `${eq.name}\n${eq.type}`,
+          name: eq.name,
+          type: eq.type,
           equipment: eq
         },
         type: 'powerNode',
@@ -887,8 +2491,8 @@ function generateNodesAndEdges(
           source: eq.parentId,
           target: eq.id,
           type: 'smoothstep',
-          sourceHandle: 'ts',
-          targetHandle: 'bt',
+          sourceHandle: 'b',
+          targetHandle: 't',
           style: {
             stroke: color,
             strokeWidth: 2

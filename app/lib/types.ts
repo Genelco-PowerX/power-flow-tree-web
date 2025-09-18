@@ -46,6 +46,8 @@ export interface TreeNode {
   id: string;
   data: {
     label: string | ReactNode;
+    name?: string;
+    type?: string;
     equipment?: ProcessedEquipment;
   };
   position: {
@@ -113,4 +115,59 @@ export interface LoopGroup {
   sources: string[];
   startEquipment?: Equipment;
   endEquipment?: Equipment;
+}
+
+export interface EquipmentLayoutInfo {
+  equipment: ProcessedEquipment;
+  branch: 'S1' | 'S2';
+  typeCategory: string;
+  level: number;
+  isLateral: boolean;
+  parentId?: string;
+  lateralInfo?: {
+    parentId: string;
+    direction: 'left' | 'right';
+    offset: number;
+  };
+}
+
+export interface Position {
+  x: number;
+  y: number;
+}
+
+export interface CollisionInfo {
+  node1: string;
+  node2: string;
+  overlap: { horizontal: number; vertical: number };
+}
+
+export interface SubtreeDimensions {
+  width: number;
+  leftBias: number;
+  rightBias: number;
+}
+
+export interface PlacementNode {
+  id: string;
+  parentId?: string;
+  info: EquipmentLayoutInfo;
+  children: {
+    s1: string[];
+    s2: string[];
+    laterals: string[];
+  };
+}
+
+export interface PlacementTree {
+  nodes: Map<string, PlacementNode>;
+  root: string;
+  rootId: string;
+}
+
+export interface LayoutValidationResult {
+  isValid: boolean;
+  issues: string[];
+  totalNodes: number;
+  validationTimestamp: string;
 }
