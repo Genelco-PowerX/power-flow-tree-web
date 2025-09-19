@@ -250,6 +250,9 @@ if (!pos && eq.isLoopGroup && eq.loopGroupData?.equipment) {
 8. **If modifying `normalizeLevelWidths`**: Always preserve 6-level hierarchical branch tracing
 9. **If changing branch sorting logic**: Test with deep hierarchies (3+ levels) to ensure correct S1/S2 ordering
 10. **If adjusting hierarchy tracing depth**: Consider that some power trees may have 6+ levels of nested equipment
+11. **If modifying MDS/UPS positioning**: Always maintain pair-based positioning and 280px UPS-MDS separation
+12. **If changing MDS ordering logic**: Ensure hierarchical branch tracing is preserved (not alphabetical name sorting)
+13. **If adjusting UPS-MDS spacing**: Test for overlaps and verify centering around tree center (x=400)
 
 ## Debugging and Troubleshooting
 
@@ -336,6 +339,34 @@ curl -s "http://localhost:3000/api/equipment-tree/EQUIPMENT_ID" 2>&1 | grep "TRA
 curl -s "http://localhost:3000/api/equipment-tree/EQUIPMENT_ID" 2>&1 | grep "LEVEL FIX"
 ```
 
+#### Issue: "MDS/UPS positioning overlaps or incorrect ordering"
+**Cause**: MDS pairs not following hierarchical branch sorting or inadequate spacing between pairs
+**Solution**: Verify MDS ordering uses branch hierarchy and proper pair spacing (500px between pairs, 280px UPS-MDS separation)
+
+**Check**:
+```bash
+# Check MDS/UPS positions and spacing
+curl -s "http://localhost:3000/api/equipment-tree/EQUIPMENT_ID" | jq '.nodes[] | select(.data.name | contains("MDS") or contains("UPS")) | {name: .data.name, x: .position.x, y: .position.y}' | jq -s 'sort_by(.x)'
+
+# Look for MDS branch tracing logs
+curl -s "http://localhost:3000/api/equipment-tree/EQUIPMENT_ID" 2>&1 | grep "MDS TRACE"
+
+# Verify MDS ordering follows S1 before S2 pattern
+curl -s "http://localhost:3000/api/equipment-tree/EQUIPMENT_ID" 2>&1 | grep "Repositioning.*MDS-UPS pairs"
+```
+
+#### Issue: "UPS-MDS pairing distance incorrect"
+**Cause**: UPS positioning not maintaining 280px offset from paired MDS
+**Solution**: Verify pair-based positioning logic and UPS offset calculation
+
+**Check**:
+```bash
+# Calculate UPS-MDS distances
+curl -s "http://localhost:3000/api/equipment-tree/EQUIPMENT_ID" | jq -r '.nodes[] | select(.data.name | contains("MDS") or contains("UPS")) | "\(.data.name): x=\(.position.x)"' | sort
+
+# Expected: Each UPS should be exactly 280px left of its paired MDS
+```
+
 ### Diagnostic Commands
 
 ```bash
@@ -373,6 +404,14 @@ curl -s "http://localhost:3000/api/equipment-tree/EQUIPMENT_ID" | jq '.nodes[].p
 - **Type-Based Alignment**: TX3-01A and TX3-01R at same Y coordinate (-820)
 - **Type-Based Alignment**: MDS3-01A and MDS3-01R at same Y coordinate (-540)
 
+#### For MDS/UPS Pair Positioning (any equipment with MDS/UPS pairs):
+- **No Overlaps**: All UPS and MDS equipment have adequate spacing (no collisions)
+- **Proper Pairing**: Each UPS positioned exactly 280px left of its paired MDS
+- **Hierarchical Ordering**: MDS ordering follows branch hierarchy (S1 before S2), not alphabetical names
+- **Centered Layout**: MDS/UPS pairs centered around tree center (x=400)
+- **Adequate Spacing**: 500px spacing between different MDS/UPS pairs
+- **Expected Pattern**: UPS1-MDS1-gap-UPS2-MDS2 (where gap is ~220px between pairs)
+
 #### For `rec9CwMw9geF7vgjX`:
 - **Node Count**: ~14-16 nodes
 - **Loop Group Present**: `loop-CDS-1R-RING`
@@ -388,6 +427,9 @@ Before any changes:
 - [ ] Node count is consistent
 - [ ] Type-based alignment working for UPS, GEN, TX equipment
 - [ ] Equipment pairs have matching Y coordinates
+- [ ] MDS/UPS pairs positioned correctly with no overlaps
+- [ ] MDS ordering follows hierarchical branch sorting (S1 before S2)
+- [ ] UPS-MDS pairing maintains exactly 280px separation
 
 After modifications:
 - [ ] All above tests still pass
@@ -396,6 +438,8 @@ After modifications:
 - [ ] Layout algorithm performance is acceptable (< 5 seconds)
 - [ ] Type-based alignment still functions correctly
 - [ ] No regression in equipment positioning
+- [ ] MDS/UPS pair positioning system working correctly
+- [ ] MDS ordering consistent with branch hierarchy
 
 ## Implementation History
 
@@ -606,6 +650,88 @@ UPS equipment requires special handling because they form bidirectional connecti
 
 **Key Insight**:
 The span solver already produces good targets; the collision system just needs branch-aware nudges plus anchor guardrails to keep everything visually aligned.
+
+### September 19, 2025 - MDS/UPS Pair Positioning System
+
+**Problem**: MDS and UPS equipment positioning was causing overlaps and centering issues. The original constraints were too simplistic and didn't account for UPS-MDS pairs as combined units, leading to visual conflicts.
+
+**Visual Issues**:
+- UPS3-02R at x=310 overlapping with MDS3-01R at x=210 (only 100px separation)
+- MDS equipment positioned too far left of center
+- MDS ordering following alphabetical names instead of hierarchical branch sorting
+- UPS-MDS pairing distances inconsistent
+
+**Solution**: Implemented comprehensive MDS/UPS pair positioning system that treats pairs as combined units:
+
+1. **Pair-Based Positioning**: Collect all MDS-UPS pairs at each level and position them as combined units
+2. **Proper Spacing**: Use 500px spacing between pairs to prevent overlaps while maintaining 280px UPS-MDS pairing
+3. **Hierarchical Branch Ordering**: Apply the same 6-level branch tracing logic used in `normalizeLevelWidths()` for consistent ordering
+4. **Centered Layout**: Calculate positions to center the entire group of pairs around the tree center
+
+**Technical Implementation**:
+```typescript
+// Collect all MDS-UPS pairs at each level
+const mdsPairsByLevel = new Map<number, Array<{
+  mdsId: string,
+  mdsInfo: EquipmentLayoutInfo,
+  mdsPos: Position,
+  upsId?: string,
+  upsInfo?: EquipmentLayoutInfo,
+  upsPos?: Position
+}>>();
+
+// Sort pairs using hierarchical branch tracing (same as normalizeLevelWidths)
+mdsPairs.sort((a, b) => {
+  const getBranchPath = (mdsInfo: EquipmentLayoutInfo): string => {
+    // 6-level hierarchy tracing to find loop group branch designation
+    // ... (same logic as normalizeLevelWidths)
+  };
+
+  const branchA = getBranchPath(a.mdsInfo);
+  const branchB = getBranchPath(b.mdsInfo);
+
+  // Primary sort by branch hierarchy (S1 before S2)
+  if (branchA !== branchB) {
+    return branchA === 'S1' ? -1 : 1;
+  }
+  // Secondary sort by name within same branch
+  return a.mdsInfo.equipment.name.localeCompare(b.mdsInfo.equipment.name);
+});
+
+// Calculate centered positions with proper pair spacing
+const centerX = 400;
+const pairSpacing = 500; // Increased spacing for UPS-MDS pairs
+const totalWidth = (mdsPairs.length - 1) * pairSpacing;
+const startX = centerX - totalWidth / 2;
+
+mdsPairs.forEach((pair, index) => {
+  const mdsX = startX + index * pairSpacing;
+  const upsX = mdsX - 280; // 280px left of MDS
+  // ... position both MDS and UPS
+});
+```
+
+**Results**:
+- ✅ **No More Overlaps**: 500px spacing between pairs prevents any collisions
+- ✅ **Proper Centering**: MDS-UPS pairs are centered around tree center (x=400)
+- ✅ **Correct Ordering**: MDS3-02R (S1 branch) positioned before MDS3-01R (S2 branch)
+- ✅ **Consistent Pairing**: Each UPS positioned exactly 280px left of its paired MDS
+- ✅ **Hierarchy Compliance**: Follows the same branch tracing rules as the rest of the layout
+
+**Final Positions (Level -150)**:
+- **MDS3-02R** (S1): x=150, **UPS3-02R**: x=-130 (280px separation)
+- **MDS3-01R** (S2): x=650, **UPS3-01R**: x=370 (280px separation)
+- **Between pairs**: 220px clean separation (370 - 150 = 220px)
+
+**Code Changes**:
+- Enhanced MDS positioning constraints in `calculateUpstreamPositions()` (lines 1607-1690)
+- Implemented pair-based collection and sorting logic
+- Added hierarchical branch tracing for MDS ordering (same as `normalizeLevelWidths()`)
+- Increased pair spacing from 380px to 500px to accommodate UPS-MDS width
+- Maintained 280px UPS-MDS pairing distance
+
+**Key Insight**:
+MDS equipment cannot be positioned independently because they form paired units with UPS equipment. The positioning algorithm must treat them as combined entities and ensure adequate spacing between pairs while maintaining the exact UPS-MDS pairing distance. Additionally, ordering must follow the complete branch hierarchy, not alphabetical names, to maintain visual consistency with the rest of the layout system.
 
 ### Technical Decisions
 

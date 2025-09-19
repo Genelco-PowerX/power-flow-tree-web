@@ -821,6 +821,8 @@ function buildPlacementTree(
 ): PlacementTree {
   const nodes = new Map<string, PlacementNode>();
 
+  console.log(`🌳 PLACEMENT TREE: Building placement tree from ${layoutInfoMap.size} equipment`);
+
   layoutInfoMap.forEach(info => {
     nodes.set(info.equipment.id, {
       id: info.equipment.id,
@@ -974,6 +976,32 @@ function computeSubtreeSpan(
     };
     spanMap.set(nodeId, minimalSpan);
     return minimalSpan;
+  }
+
+  // If this node is a loop group, constrain its width
+  if (node.info.equipment.isLoopGroup) {
+    visited.add(nodeId);
+
+    const s1Spans = node.children.s1.map(childId => computeSubtreeSpan(childId, tree, spanMap, visited, loopGroupMemberIds));
+    const s2Spans = node.children.s2.map(childId => computeSubtreeSpan(childId, tree, spanMap, visited, loopGroupMemberIds));
+
+    const s1Width = sumGroupWidth(s1Spans);
+    const s2Width = sumGroupWidth(s2Spans);
+
+    // For loop groups, use constrained width instead of full child span
+    const constrainedWidth = Math.max(nodeWidth, Math.min(nodeWidth * 3, Math.max(s1Width, s2Width)));
+    const leftBias = constrainedWidth / 2;
+    const rightBias = constrainedWidth / 2;
+
+    const span: SubtreeDimensions = {
+      width: constrainedWidth,
+      leftBias,
+      rightBias
+    };
+
+    spanMap.set(nodeId, span);
+    visited.delete(nodeId);
+    return span;
   }
 
   // Add current node to visited set
@@ -1146,6 +1174,7 @@ function assignPositionsRecursive(
   });
 }
 
+
 function normalizeLevelWidths(
   positions: Map<string, Position>,
   layoutInfoMap: Map<string, EquipmentLayoutInfo>,
@@ -1163,10 +1192,9 @@ function normalizeLevelWidths(
       return; // Skip laterals
     }
 
-    // Skip loop groups - they should be positioned by their own algorithm
+    // Include loop groups in normalization to fix extreme positioning
     if (info.equipment.isLoopGroup) {
-      console.log(`    🔄 LOOP GROUP SKIPPED: ${info.equipment.name}`);
-      return;
+      console.log(`    🔄 LOOP GROUP INCLUDED: ${info.equipment.name} (will be normalized)`);
     }
 
     const pos = positions.get(info.equipment.id);
@@ -1574,6 +1602,129 @@ function calculateUpstreamPositions(
         }
       });
     }
+  });
+
+  console.log('🔄 STEP 13: Applying MDS/UPS pair positioning constraints...');
+
+  // Collect all MDS-UPS pairs at each level for proper spacing
+  const mdsPairsByLevel = new Map<number, Array<{
+    mdsId: string,
+    mdsInfo: EquipmentLayoutInfo,
+    mdsPos: Position,
+    upsId?: string,
+    upsInfo?: EquipmentLayoutInfo,
+    upsPos?: Position
+  }>>();
+
+  finalPositions.forEach((pos, id) => {
+    const info = layoutInfoMap.get(id);
+    if (info?.equipment.type.includes('MDS')) {
+      const level = info.level;
+      if (!mdsPairsByLevel.has(level)) {
+        mdsPairsByLevel.set(level, []);
+      }
+
+      // Find paired UPS
+      let pairedUpsId: string | undefined;
+      let pairedUpsInfo: EquipmentLayoutInfo | undefined;
+      let pairedUpsPos: Position | undefined;
+
+      layoutInfoMap.forEach((upsInfo, upsId) => {
+        if (upsInfo.isLateral && upsInfo.equipment.type.includes('UPS') && upsInfo.parentId === id) {
+          pairedUpsId = upsId;
+          pairedUpsInfo = upsInfo;
+          pairedUpsPos = finalPositions.get(upsId);
+        }
+      });
+
+      mdsPairsByLevel.get(level)!.push({
+        mdsId: id,
+        mdsInfo: info,
+        mdsPos: pos,
+        upsId: pairedUpsId,
+        upsInfo: pairedUpsInfo,
+        upsPos: pairedUpsPos
+      });
+    }
+  });
+
+  // Reposition MDS-UPS pairs for better centering and no overlaps
+  mdsPairsByLevel.forEach((mdsPairs, level) => {
+    if (mdsPairs.length === 0) return;
+
+    console.log(`    📍 Repositioning ${mdsPairs.length} MDS-UPS pairs at level ${level}`);
+
+    // Sort pairs using the same hierarchical branch logic as normalizeLevelWidths
+    // This ensures MDS ordering follows the complete branch hierarchy, not just names
+    mdsPairs.sort((a, b) => {
+      // Get branch path by tracing up hierarchy to find loop group (same logic as normalizeLevelWidths)
+      const getBranchPath = (mdsInfo: EquipmentLayoutInfo): string => {
+        const parentId = mdsInfo.parentId;
+        if (!parentId) return mdsInfo.branch || 'S1';
+
+        let currentId = parentId;
+        const tracePath: string[] = [];
+
+        // Trace up to 6 levels to find a loop group
+        for (let level = 0; level < 6; level++) {
+          const currentInfo = layoutInfoMap.get(currentId);
+          if (!currentInfo) break;
+
+          tracePath.push(currentInfo.equipment.name);
+
+          // If we found a loop group, use its branch designation
+          if (currentInfo.equipment.isLoopGroup) {
+            const loopBranch = currentInfo.branch || 'S1';
+            console.log(`    🧬 MDS TRACE (${level + 1} levels): ${mdsInfo.equipment.name} → ${tracePath.join(' → ')} = ${loopBranch}`);
+            return loopBranch;
+          }
+
+          // Move up to the next parent
+          if (!currentInfo.parentId) break;
+          currentId = currentInfo.parentId;
+        }
+
+        // If no loop group found, use the MDS's own branch
+        const fallbackBranch = mdsInfo.branch || 'S1';
+        console.log(`    🧬 MDS TRACE (fallback): ${mdsInfo.equipment.name} → ${tracePath.join(' → ')} = ${fallbackBranch} (no loop group found)`);
+        return fallbackBranch;
+      };
+
+      const branchA = getBranchPath(a.mdsInfo);
+      const branchB = getBranchPath(b.mdsInfo);
+
+      // Primary sort by branch hierarchy (S1 before S2)
+      if (branchA !== branchB) {
+        return branchA === 'S1' ? -1 : 1;
+      }
+
+      // Secondary sort by name within same branch
+      return a.mdsInfo.equipment.name.localeCompare(b.mdsInfo.equipment.name);
+    });
+
+    // Calculate spacing that accounts for both UPS and MDS
+    // Each pair needs: UPS width + 280px gap + MDS width
+    // Plus spacing between pairs
+    const centerX = 400;
+    const pairSpacing = 500; // Increased spacing to account for UPS-MDS pairs
+    const totalWidth = (mdsPairs.length - 1) * pairSpacing;
+    const startX = centerX - totalWidth / 2;
+
+    mdsPairs.forEach((pair, index) => {
+      // Position MDS at the calculated position
+      const mdsX = startX + index * pairSpacing;
+      const oldMdsPos = finalPositions.get(pair.mdsId)!;
+
+      console.log(`    🔄 MDS ${pair.mdsInfo.equipment.name}: x=${Math.round(oldMdsPos.x)} → ${Math.round(mdsX)} (pair ${index + 1})`);
+      finalPositions.set(pair.mdsId, { x: mdsX, y: oldMdsPos.y });
+
+      // Position UPS 280px to the left of MDS
+      if (pair.upsId && pair.upsPos) {
+        const upsX = mdsX - 280;
+        console.log(`    🔄 UPS ${pair.upsInfo!.equipment.name}: x=${Math.round(pair.upsPos.x)} → ${Math.round(upsX)} (paired with MDS)`);
+        finalPositions.set(pair.upsId, { x: upsX, y: pair.upsPos.y });
+      }
+    });
   });
 
   console.log('🏗️ ===== LAYOUT PROCESS END =====');
@@ -2221,17 +2372,35 @@ function generateNodesAndEdges(
 
     // If loop group doesn't have a position, calculate proper baseline position
     if (!pos && eq.isLoopGroup && eq.loopGroupData?.equipment) {
-      const firstMember = eq.loopGroupData.equipment[0];
-      const firstMemberPos = firstMember ? upstreamPositions.get(firstMember.id) : null;
+      const members = eq.loopGroupData.equipment;
+      const memberPositions = members
+        .map(member => upstreamPositions.get(member.id))
+        .filter(pos => pos !== undefined) as Position[];
 
-      if (firstMemberPos) {
-        // Use first member's X coordinate but calculate proper baseline Y based on loop group's level
+      if (memberPositions.length > 0) {
+        // Position loop groups using standard S1/S2 spacing pattern
+        const centerX = 400; // Default center
+        const spacing = 380; // Standard equipment spacing
+
+        // Determine positioning based on branch
+        let targetX: number;
+        if (eq.branch === 'S1') {
+          targetX = centerX - spacing / 2; // S1 to the left
+        } else if (eq.branch === 'S2') {
+          targetX = centerX + spacing / 2; // S2 to the right
+        } else {
+          // Fallback: position based on loop group order if no branch specified
+          const isFirstLoopGroup = eq.id.includes('1R') || eq.name.includes('01R');
+          targetX = isFirstLoopGroup ? centerX - spacing / 2 : centerX + spacing / 2;
+        }
+
+        // Calculate proper baseline Y based on loop group's level
         const baselineY = upstreamBaselines.get(eq.level) ?? (300 - eq.level * 280); // 300 = centerY, 280 = levelSpacing
         pos = {
-          x: firstMemberPos.x,
+          x: targetX,
           y: baselineY
         };
-        console.log(`Loop group ${eq.id} positioned at correct baseline: level ${eq.level} -> Y ${baselineY} (was ${firstMemberPos.y})`);
+        console.log(`Loop group ${eq.id} positioned with standard spacing: branch=${eq.branch}, x=${Math.round(targetX)}, y=${baselineY} (level ${eq.level})`);
       }
     }
 
