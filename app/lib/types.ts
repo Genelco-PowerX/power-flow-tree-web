@@ -78,6 +78,7 @@ export interface TreeEdge {
     isLoop?: boolean;
     connectionType?: 'normal' | 'bypass' | 'redundant';
     isAlternate?: boolean;
+    isBypassConnection?: boolean;
   };
 }
 

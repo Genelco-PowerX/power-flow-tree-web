@@ -2773,6 +2773,76 @@ function generateNodesAndEdges(
     }
   }
 
+  // Generate bypass connections for UPS ending in "-2" to corresponding transformers
+  console.log('🔗 Generating bypass connections for UPS ending in "-2"...');
+
+  // Find all UPS equipment ending in "-2" from both upstream and selected equipment
+  let bypassUpsEquipment = upstream.filter(eq =>
+    eq.type.includes('UPS') &&
+    eq.name.endsWith('-2') &&
+    eq.name.includes('UPS') && // Double-check it's actually a UPS in the name
+    eq.name.length > 3 // Ensure it's not just "-2"
+  );
+
+  // Also check if the selected equipment itself is a UPS ending in "-2"
+  if (selectedEquipment.type.includes('UPS') &&
+      selectedEquipment.name.endsWith('-2') &&
+      selectedEquipment.name.includes('UPS') &&
+      selectedEquipment.name.length > 3) {
+    console.log(`🔍 Selected equipment is bypass UPS: ${selectedEquipment.name}`);
+    // Add selected equipment to the list if it's not already there
+    const isAlreadyIncluded = bypassUpsEquipment.some(eq => eq.id === selectedEquipment.id);
+    if (!isAlreadyIncluded) {
+      bypassUpsEquipment.push(selectedEquipment);
+    }
+  }
+
+  bypassUpsEquipment.forEach(upsEq => {
+    console.log(`🔍 Checking bypass UPS: ${upsEq.name}`);
+
+    // Find transformers that have this UPS in their parentIds (indicating bypass relationship)
+    // Look in both upstream and downstream equipment
+    const allEquipment = [...upstream, ...downstream];
+    const connectedTransformers = allEquipment.filter(txEq =>
+      txEq.type.includes('TX') &&
+      txEq.parentIds &&
+      txEq.parentIds.includes(upsEq.id)
+    );
+
+    connectedTransformers.forEach(txEq => {
+      // Verify both equipment have nodes in the final node list
+      const upsNode = nodes.find(node => node.id === upsEq.id);
+      const txNode = nodes.find(node => node.id === txEq.id);
+
+      if (upsNode && txNode) {
+        const bypassEdgeId = `bypass-${upsEq.id}-${txEq.id}`;
+
+        console.log(`✅ Creating bypass connection: ${upsEq.name} → ${txEq.name}`);
+
+        edges.push({
+          id: bypassEdgeId,
+          source: upsEq.id,
+          target: txEq.id,
+          type: 'smoothstep',
+          sourceHandle: 'sl', // Left side of UPS
+          targetHandle: 'sr', // Right side of transformer
+          style: {
+            stroke: '#1259ad', // Normal connection color (same as S1)
+            strokeWidth: 2
+          },
+          data: {
+            sourceNumber: 'BYPASS',
+            connectionType: 'bypass',
+            isAlternate: false, // Not alternate since it should look normal
+            isBypassConnection: true
+          }
+        });
+      } else {
+        console.log(`⚠️ Nodes not found for bypass connection: UPS ${upsEq.name} → TX ${txEq.name}`);
+      }
+    });
+  });
+
   // Deduplicate edges to prevent React key conflicts
   const uniqueEdges: TreeEdge[] = [];
   const edgeMap = new Map<string, TreeEdge>();
